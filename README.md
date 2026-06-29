@@ -163,3 +163,6 @@ npm run dev
 - 使用 Vue 3 Composition API
 - Element Plus UI 组件库
 - Axios 拦截器处理请求/响应
+
+# LTCMsystem
+轻量任务协作管理系统，面向个人学习规划、学生团队课程项目、小型团队办公协作，用于任务统筹、分工分配、 进度追踪与数据复盘，解决任务管理混乱、分工不清晰、进度难跟踪的问题。
