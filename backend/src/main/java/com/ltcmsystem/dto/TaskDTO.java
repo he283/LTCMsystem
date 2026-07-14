@@ -15,4 +15,6 @@ public class TaskDTO {
     private LocalDateTime dueDate;
     private Long assigneeId;
     private Long teamId;
+    private Integer isPublic;
+    private String publicDesc;
 }

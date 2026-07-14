@@ -8,8 +8,10 @@ public class MemberTaskStatsDTO {
     private String username;
     private String nickname;
     private int totalTasks;
-    private int todoTasks;
+    private int pendingAssignTasks;
     private int inProgressTasks;
+    private int pendingReviewTasks;
     private int doneTasks;
+    private int cancelledTasks;
     private double completionRate;
 }

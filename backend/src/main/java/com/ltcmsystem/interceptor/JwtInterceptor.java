@@ -19,6 +19,8 @@ public class JwtInterceptor implements HandlerInterceptor {
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         String authHeader = request.getHeader("Authorization");
+        String requestUri = request.getRequestURI();
+        
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             String token = authHeader.substring(7);
             if (!jwtUtil.isTokenExpired(token)) {
@@ -27,8 +29,17 @@ public class JwtInterceptor implements HandlerInterceptor {
                 return true;
             }
         }
+        
+        if (isPublicPath(requestUri)) {
+            return true;
+        }
+        
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         return false;
+    }
+    
+    private boolean isPublicPath(String uri) {
+        return uri.startsWith("/api/auth/") || uri.startsWith("/api/public/");
     }
 
     @Override

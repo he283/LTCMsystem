@@ -10,6 +10,7 @@ import java.time.LocalDateTime;
 @EqualsAndHashCode(callSuper = true)
 @TableName("task")
 public class Task extends BaseEntity {
+    private String taskCode;
     private String title;
     private String description;
     private String status;
@@ -21,4 +22,6 @@ public class Task extends BaseEntity {
     private Long creatorId;
     private Long assigneeId;
     private Long teamId;
+    private Integer isPublic;
+    private String publicDesc;
 }

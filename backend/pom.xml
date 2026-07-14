@@ -16,6 +16,7 @@
     <artifactId>ltcm-system</artifactId>
     <version>1.0.0</version>
     <name>ltcm-system</name>
+    <packaging>jar</packaging>
     <description>轻量任务协作管理系统</description>
 
     <properties>

@@ -69,6 +69,13 @@
           </el-form>
         </el-tab-pane>
       </el-tabs>
+
+      <div class="plaza-link">
+        <el-button type="text" @click="goPlaza">
+          <el-icon><Reading /></el-icon>
+          浏览任务广场
+        </el-button>
+      </div>
     </div>
   </div>
 </template>
@@ -77,7 +84,7 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { User, Lock, Avatar } from '@element-plus/icons-vue'
+import { User, Lock, Avatar, Reading } from '@element-plus/icons-vue'
 import { login, register } from '@/api'
 import { useUserStore } from '@/stores/user'
 
@@ -169,6 +176,10 @@ const handleRegister = async () => {
     }
   })
 }
+
+const goPlaza = () => {
+  router.push('/plaza')
+}
 </script>
 
 <style scoped>
@@ -208,5 +219,17 @@ const handleRegister = async () => {
 
 .login-tabs {
   margin-top: 20px;
+}
+
+.plaza-link {
+  text-align: center;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #ebeef5;
+}
+
+.plaza-link .el-button {
+  color: #409eff;
+  font-size: 14px;
 }
 </style>
