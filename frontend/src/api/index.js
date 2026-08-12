@@ -42,3 +42,16 @@ export const getUnreadCount = () => request.get('/notifications/unread-count')
 export const markNotificationRead = (id) => request.put(`/notifications/${id}/read`)
 export const markAllNotificationsRead = () => request.put('/notifications/read-all')
 export const clearAllNotifications = () => request.delete('/notifications/clear-all')
+
+// ============ Agent 助手相关 ============
+// Agent 接口会调用大模型（deepseek-v4-flash），耗时通常 5~20s，单独设置较长超时 60s
+export const agentChat = (data) => request.post('/agent/chat', data, { timeout: 60000 })
+// 流式接口 /agent/chat/stream 由前端直接用 fetch 调用（要取 ReadableStream，axios 不方便）
+export const agentHealth = () => request.get('/agent/health', { timeout: 5000 })
+export const getTaskAnalysis = (userId) => request.get(`/agent/task-analysis/${userId}`, { timeout: 30000 })
+export const getTeamAnalysis = (userId) => request.get(`/agent/team-analysis/${userId}`, { timeout: 30000 })
+// 聊天历史：从服务端拉取（刷新页面后localStorage丢失也能找回） / 清空
+export const getAgentHistory = (chatId, userId) =>
+  request.get(`/agent/history/${encodeURIComponent(chatId)}`, { params: { user_id: userId }, timeout: 5000 })
+export const deleteAgentHistory = (chatId, userId) =>
+  request.delete(`/agent/history/${encodeURIComponent(chatId)}`, { params: { user_id: userId }, timeout: 5000 })

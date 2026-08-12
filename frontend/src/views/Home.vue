@@ -92,6 +92,10 @@
               <el-icon><UserFilled /></el-icon>
               <span>团队管理</span>
             </el-menu-item>
+            <el-menu-item index="agent">
+              <el-icon><ChatDotRound /></el-icon>
+              <span>AI助手</span>
+            </el-menu-item>
           </el-menu>
         </el-aside>
         <el-main class="main">
@@ -519,6 +523,11 @@
               </el-tab-pane>
             </el-tabs>
           </div>
+
+          <!-- AI助手聊天界面 -->
+          <div v-if="activeMenu === 'agent'">
+            <AgentChat />
+          </div>
         </el-main>
       </el-container>
     </el-container>
@@ -767,8 +776,9 @@ import {
   Document, ArrowDown, DataLine, List, UserFilled,
   Clock, Loading, CircleCheck, Plus, Edit, Delete,
   User, Connection, Reading, Bell, Tickets,
-  SwitchButton, Check, Close
+  SwitchButton, Check, Close, ChatDotRound
 } from '@element-plus/icons-vue'
+import AgentChat from '@/components/AgentChat.vue'
 import { useUserStore } from '@/stores/user'
 import { useTaskStore } from '@/stores/task'
 import { useTeamStore } from '@/stores/team'
