@@ -106,7 +106,8 @@ INTENT_PATTERNS = [
 
 STATIC_REPLIES = {
     'greeting': [
-        '你好呀！我是 LTCM小助手 🤖，很高兴为你服务！\n\n你可以问我：\n• "我今天做什么" — 获取今日任务安排\n• "分析我的任务" — 任务整体分析\n• "有哪些通知" — 查看未读消息\n• "帮助" — 查看全部功能',
+        '你好呀！我是 LTCM小助手 😊，很高兴为你服务！\n\n你可以问我：\n'
+        '• "我今天做什么" — 获取今日任务安排\n• "分析我的任务" — 任务整体分析\n• "有哪些通知" — 查看未读消息\n• "帮助" — 查看全部功能',
         '嗨～欢迎回来！✨ 我是你的任务管理助手，随时帮你梳理任务和进度～'
     ],
     'help': [
@@ -139,7 +140,7 @@ STATIC_REPLIES = {
     ],
     'who_are_you': [
         """
-我是 **LTCM小助手** 🤖，你的专属任务管理AI助手！
+我是 **LTCM小助手** 😊，你的专属任务管理AI助手！
 
 我可以帮你：
 📊 分析任务情况和统计数据
@@ -153,7 +154,7 @@ STATIC_REPLIES = {
     'unknown': [
         '这个我暂时还不太理解呢 🤔\n试试问我："我今天做什么"、"分析我的任务"，或者输入"帮助"查看全部功能～',
         '嗯，这个问题我需要再学习学习！💡\n你可以试试问我任务相关的问题，比如"我有哪些任务"？',
-        '抱歉，我没太明白你的意思 😅\n输入"帮助"可以查看我能做什么哦！'
+        '你是故意找茬的是不是？'
     ]
 }
 
@@ -175,6 +176,19 @@ def _try_langgraph(user_id, user_message, chat_id=None):
     except Exception as e:
         logger.warning(f'[CHAT] LangGraph路径不可用，回退到纯函数路径: {type(e).__name__}: {e}')
         return False, None
+
+
+def _try_langgraph_stream_v2(user_id, user_message, chat_id=None):
+    """优先尝试 LangGraph「原生流式 v2」（大模型边生成边输出 + 阶段状态事件）。返回生成器或None"""
+    from config import USE_LANGGRAPH
+    if not USE_LANGGRAPH:
+        return None
+    try:
+        from services.langchain_llm import invoke_agent_via_langgraph_stream_v2
+        return invoke_agent_via_langgraph_stream_v2(user_id, user_message, chat_id=chat_id)
+    except Exception as e:
+        logger.warning(f'[CHAT] LangGraph 原生流式(v2)路径不可用: {type(e).__name__}: {e}')
+        return None
 
 
 def _try_langgraph_stream(user_id, user_message, chat_id=None):
@@ -216,48 +230,56 @@ def _legacy_stream(user_id, user_message, chat_id=None):
 def get_reply_stream(user_id, user_message, chat_id=None):
     """
     统一流式入口：
-      - 优先 LangGraph 流式（生成器）
-      - 否则 legacy 流式
+      - 优先「大模型原生流式 v2」（LLM_NATIVE_STREAM=True 时，仿 DeepSeek 网页版：阶段状态 + 边生成边输出）
+      - 否则 LangGraph 模拟打字机（v1）
+      - 否则 legacy 纯函数流式
     返回 Generator[str]
     """
     user_message = (user_message or '').strip()
     # 先写用户历史（保证即使出错也有上下文轨迹）
-    from config import CHAT_HISTORY_ENABLED
+    from config import CHAT_HISTORY_ENABLED, LLM_NATIVE_STREAM
     if chat_id and CHAT_HISTORY_ENABLED:
         from services.chat_history import append_user_message
         append_user_message(chat_id, user_id, user_message)
 
-    gen = _try_langgraph_stream(user_id, user_message, chat_id=chat_id)
-    if gen is not None:
-        # 流式结束时把 assistant content 追加到历史（从 DONE 行取）
-        full = []
-        meta_done = None
-        for chunk in gen:
-            if isinstance(chunk, str) and chunk.startswith('\0__DONE__:'):
-                try:
-                    import json as _json
-                    meta_done = _json.loads(chunk[len('\0__DONE__:'):])
-                except Exception:
-                    meta_done = {}
-                # 不直接吐这个原始标记，改吐一个更干净的标记（便于前端识别，但不污染content）
-                yield chunk
-            else:
-                if isinstance(chunk, str):
-                    full.append(chunk)
-                yield chunk
-        if chat_id and CHAT_HISTORY_ENABLED and meta_done is not None:
-            from services.chat_history import append_assistant_message
-            full_text = ''.join(full)
-            append_assistant_message(
-                chat_id, user_id, full_text,
-                type=meta_done.get('type', 'markdown'),
-                meta={k: v for k, v in meta_done.items() if k != 'data'}
-            )
-        return
+    # 选择生成器：v2 原生流式 → v1 模拟打字机 → legacy
+    gen = None
+    if LLM_NATIVE_STREAM:
+        gen = _try_langgraph_stream_v2(user_id, user_message, chat_id=chat_id)
+    if gen is None:
+        gen = _try_langgraph_stream(user_id, user_message, chat_id=chat_id)
+    if gen is None:
+        gen = _legacy_stream(user_id, user_message, chat_id=chat_id)
 
-    # 回退 legacy 流式
-    for chunk in _legacy_stream(user_id, user_message, chat_id=chat_id):
-        yield chunk
+    # 消费生成器：正文拼接 / 事件透传（\0__EVENT__: 不拼进正文）/ DONE 解析 meta 落地历史
+    full = []
+    meta_done = None
+    for chunk in gen:
+        if isinstance(chunk, str) and chunk.startswith('\0__DONE__:'):
+            try:
+                import json as _json
+                meta_done = _json.loads(chunk[len('\0__DONE__:'):])
+            except Exception:
+                meta_done = {}
+            # 原样透传 DONE 标记（前端据此停止拼接并解析 meta）
+            yield chunk
+        elif isinstance(chunk, str) and chunk.startswith('\0__EVENT__:'):
+            # 控制事件原样透传，不拼进正文
+            yield chunk
+        else:
+            if isinstance(chunk, str):
+                full.append(chunk)
+            yield chunk
+
+    # 流式结束后：把 assistant 完整正文 + meta 追加到聊天历史
+    if chat_id and CHAT_HISTORY_ENABLED and meta_done is not None:
+        from services.chat_history import append_assistant_message
+        full_text = ''.join(full)
+        append_assistant_message(
+            chat_id, user_id, full_text,
+            type=meta_done.get('type', 'markdown'),
+            meta={k: v for k, v in meta_done.items() if k != 'data'}
+        )
 
 
 def get_reply(user_id, user_message, chat_id=None, _skip_stream=False):

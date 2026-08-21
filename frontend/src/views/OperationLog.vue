@@ -51,19 +51,29 @@
                 <el-input v-model="filterForm.operator" placeholder="请输入操作人" clearable />
               </el-form-item>
               <el-form-item label="操作类型">
-                <el-select v-model="filterForm.type" placeholder="全部" clearable>
+                <el-select v-model="filterForm.type" placeholder="全部" clearable style="width: 140px">
                   <el-option label="登录" value="LOGIN" />
                   <el-option label="登出" value="LOGOUT" />
-                  <el-option label="创建" value="CREATE" />
-                  <el-option label="更新" value="UPDATE" />
-                  <el-option label="删除" value="DELETE" />
+                  <el-option label="任务新增" value="TASK_CREATE" />
+                  <el-option label="任务修改" value="TASK_UPDATE" />
+                  <el-option label="任务删除" value="TASK_DELETE" />
+                  <el-option label="团队新增" value="TEAM_CREATE" />
+                  <el-option label="团队修改" value="TEAM_UPDATE" />
+                  <el-option label="团队删除" value="TEAM_DELETE" />
+                  <el-option label="加入团队" value="TEAM_JOIN" />
+                  <el-option label="退出团队" value="TEAM_LEAVE" />
+                  <el-option label="邀请成员" value="TEAM_INVITE" />
+                  <el-option label="移除成员" value="TEAM_REMOVE_MEMBER" />
+                  <el-option label="AI对话" value="AI_CHAT" />
                 </el-select>
               </el-form-item>
               <el-form-item label="模块">
-                <el-select v-model="filterForm.module" placeholder="全部" clearable>
-                  <el-option label="用户" value="USER" />
-                  <el-option label="团队" value="TEAM" />
-                  <el-option label="任务" value="TASK" />
+                <el-select v-model="filterForm.module" placeholder="全部" clearable style="width: 140px">
+                  <el-option label="认证" value="auth" />
+                  <el-option label="用户" value="user" />
+                  <el-option label="团队" value="team" />
+                  <el-option label="任务" value="task" />
+                  <el-option label="AI助手" value="agent" />
                 </el-select>
               </el-form-item>
               <el-form-item label="时间范围">
@@ -93,16 +103,16 @@
               style="width: 100%"
               stripe
             >
-              <el-table-column prop="operationTime" label="操作时间" width="180">
+              <el-table-column prop="createTime" label="操作时间" width="180">
                 <template #default="{ row }">
-                  {{ formatDate(row.operationTime) }}
+                  {{ formatDate(row.createTime) }}
                 </template>
               </el-table-column>
-              <el-table-column prop="operatorName" label="操作人" width="120" />
-              <el-table-column prop="type" label="操作类型" width="100">
+              <el-table-column prop="nickname" label="操作人" width="120" />
+              <el-table-column prop="operationType" label="操作类型" width="100">
                 <template #default="{ row }">
-                  <el-tag :type="getTypeTag(row.type)" size="small">
-                    {{ getTypeText(row.type) }}
+                  <el-tag :type="getTypeTag(row.operationType)" size="small">
+                    {{ getTypeText(row.operationType) }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -113,8 +123,8 @@
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column prop="description" label="操作描述" min-width="300" show-overflow-tooltip />
-              <el-table-column prop="ip" label="IP地址" width="140" />
+              <el-table-column prop="operationDesc" label="操作描述" min-width="300" show-overflow-tooltip />
+              <el-table-column prop="ipAddress" label="IP地址" width="140" />
             </el-table>
 
             <div class="pagination">
@@ -167,9 +177,17 @@ const getTypeText = (type) => {
   const map = {
     LOGIN: '登录',
     LOGOUT: '登出',
-    CREATE: '创建',
-    UPDATE: '更新',
-    DELETE: '删除'
+    TASK_CREATE: '任务新增',
+    TASK_UPDATE: '任务修改',
+    TASK_DELETE: '任务删除',
+    TEAM_CREATE: '团队新增',
+    TEAM_UPDATE: '团队修改',
+    TEAM_DELETE: '团队删除',
+    TEAM_JOIN: '加入团队',
+    TEAM_LEAVE: '退出团队',
+    TEAM_INVITE: '邀请成员',
+    TEAM_REMOVE_MEMBER: '移除成员',
+    AI_CHAT: 'AI对话'
   }
   return map[type] || type
 }
@@ -178,15 +196,28 @@ const getTypeTag = (type) => {
   const map = {
     LOGIN: 'success',
     LOGOUT: 'info',
-    CREATE: 'primary',
-    UPDATE: 'warning',
-    DELETE: 'danger'
+    TASK_CREATE: 'primary',
+    TASK_UPDATE: 'warning',
+    TASK_DELETE: 'danger',
+    TEAM_CREATE: 'primary',
+    TEAM_UPDATE: 'warning',
+    TEAM_DELETE: 'danger',
+    TEAM_JOIN: 'success',
+    TEAM_LEAVE: 'info',
+    TEAM_INVITE: 'primary',
+    TEAM_REMOVE_MEMBER: 'danger',
+    AI_CHAT: 'warning'
   }
   return map[type] || 'info'
 }
 
 const getModuleText = (module) => {
   const map = {
+    auth: '认证',
+    user: '用户',
+    team: '团队',
+    task: '任务',
+    agent: 'AI助手',
     USER: '用户',
     TEAM: '团队',
     TASK: '任务'
@@ -196,6 +227,11 @@ const getModuleText = (module) => {
 
 const getModuleTag = (module) => {
   const map = {
+    auth: 'success',
+    user: 'success',
+    team: 'primary',
+    task: 'warning',
+    agent: 'danger',
     USER: 'success',
     TEAM: 'primary',
     TASK: 'warning'
@@ -216,17 +252,18 @@ const loadLogs = async () => {
       pageSize: pageSize.value
     }
     if (filterForm.value.operator) {
-      params.operator = filterForm.value.operator
+      params.username = filterForm.value.operator
     }
     if (filterForm.value.type) {
-      params.type = filterForm.value.type
+      params.operationType = filterForm.value.type
     }
     if (filterForm.value.module) {
       params.module = filterForm.value.module
     }
     if (filterForm.value.dateRange && filterForm.value.dateRange.length === 2) {
-      params.startDate = filterForm.value.dateRange[0]
-      params.endDate = filterForm.value.dateRange[1]
+      // 后端 LocalDateTime 参数走 Spring 标准 ISO 格式解析
+      params.startTime = filterForm.value.dateRange[0] + 'T00:00:00'
+      params.endTime = filterForm.value.dateRange[1] + 'T23:59:59'
     }
     const res = await getOperationLogs(params)
     if (res.data) {

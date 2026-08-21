@@ -12,6 +12,7 @@ public interface TeamService extends IService<Team> {
     void deleteTeam(Long teamId, Long userId);
     void inviteMember(Long teamId, String username, Long currentUserId);
     void removeMember(Long teamId, Long memberId, Long currentUserId);
+    void transferAdmin(Long teamId, Long newAdminId, Long currentUserId);
     List<TeamMemberDTO> getTeamMembers(Long teamId);
     TeamMemberDTO getTeamMember(Long teamId, Long userId);
 }

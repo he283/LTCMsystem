@@ -16,4 +16,8 @@ public class Team extends BaseEntity {
 
     @TableField(exist = false)
     private String creatorNickname;
+
+    /** 当前登录用户在该团队的角色（ADMIN=管理 / MEMBER=成员，由 getUserTeams 填充） */
+    @TableField(exist = false)
+    private String role;
 }

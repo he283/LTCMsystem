@@ -35,6 +35,12 @@ const routes = [
     name: 'OperationLog',
     component: () => import('@/views/OperationLog.vue'),
     meta: { requiresAuth: true, adminOnly: true }
+  },
+  {
+    path: '/login-log',
+    name: 'LoginLog',
+    component: () => import('@/views/LoginLog.vue'),
+    meta: { requiresAuth: true, adminOnly: true }
   }
 ]
 
@@ -43,12 +49,24 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
   if (to.meta.requiresAuth && !userStore.token) {
     next('/login')
   } else if (to.path === '/login' && userStore.token) {
     next('/home')
+  } else if (to.meta.adminOnly) {
+    // 管理员专属页面：刷新后 userInfo 可能还没加载，先补拉一次
+    if (!userStore.userInfo) {
+      try { await userStore.fetchUserInfo() } catch (e) {}
+    }
+    const info = userStore.userInfo
+    const isAdmin = !!(info && (info.role === 'ADMIN' || info.username === 'admin'))
+    if (!isAdmin) {
+      next('/home')
+    } else {
+      next()
+    }
   } else {
     next()
   }

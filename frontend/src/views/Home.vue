@@ -54,14 +54,17 @@
           </el-popover>
           <el-dropdown @command="handleCommand">
             <span class="user-dropdown">
-              <el-avatar :size="32" style="margin-right: 10px" />
+              <el-avatar :size="32" style="margin-right: 10px" :src="userStore.userInfo?.avatar || ''">
+                {{ userAvatarInitial }}
+              </el-avatar>
               <span>{{ userStore.userInfo?.nickname || userStore.userInfo?.username }}</span>
               <el-icon class="el-icon--right"><ArrowDown /></el-icon>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item command="profile">个人中心</el-dropdown-item>
-                <el-dropdown-item command="operationLog" v-if="userStore.userInfo?.role === 'ADMIN'">操作日志</el-dropdown-item>
+                <el-dropdown-item command="loginLog" v-if="isAdmin">登录日志</el-dropdown-item>
+                <el-dropdown-item command="operationLog" v-if="isAdmin">操作日志</el-dropdown-item>
                 <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -95,6 +98,10 @@
             <el-menu-item index="agent">
               <el-icon><ChatDotRound /></el-icon>
               <span>AI助手</span>
+            </el-menu-item>
+            <el-menu-item index="login-log" v-if="isAdmin" @click="goLoginLog">
+              <el-icon><Key /></el-icon>
+              <span>登录日志</span>
             </el-menu-item>
           </el-menu>
         </el-aside>
@@ -286,7 +293,8 @@
                   <template #header>
                     <div class="team-header">
                       <span class="team-name">{{ team.name }}</span>
-                      <el-tag type="success" size="small">我的团队</el-tag>
+                      <el-tag v-if="isManagedTeam(team)" type="success" size="small">我管理的团队</el-tag>
+                      <el-tag v-else class="team-tag-joined" size="small">我加入的团队</el-tag>
                     </div>
                   </template>
                   <div class="team-code-row">
@@ -296,7 +304,7 @@
                   <div class="team-footer">
                     <span class="team-members">
                       <el-icon><User /></el-icon>
-                      创建人: {{ team.creatorNickname || team.creatorName || team.creatorId }}
+                      创建者/所有者: {{ team.creatorNickname || team.creatorName || team.creatorId }}
                     </span>
                   </div>
                 </el-card>
@@ -389,7 +397,7 @@
                             {{ formatDate(row.joinTime) }}
                           </template>
                         </el-table-column>
-                        <el-table-column label="操作" width="120" v-if="isTeamAdmin">
+                        <el-table-column label="操作" width="200" v-if="isTeamAdmin">
                           <template #default="{ row }">
                             <el-button 
                               size="small" 
@@ -398,6 +406,15 @@
                               :disabled="row.userId === userStore.userInfo?.id"
                             >
                               移除
+                            </el-button>
+                            <!-- 转让管理员：仅团队创建者可见（对非本人的成员） -->
+                            <el-button
+                              v-if="isTeamCreator && row.userId !== userStore.userInfo?.id"
+                              size="small"
+                              type="warning"
+                              @click="confirmTransferAdmin(row)"
+                            >
+                              转让
                             </el-button>
                           </template>
                         </el-table-column>
@@ -408,8 +425,9 @@
               </el-tab-pane>
 
               <el-tab-pane label="审批管理" name="applications" v-if="isTeamAdmin">
-                <el-row :gutter="20" style="margin-top: 0">
-                  <el-col :span="24">
+                <el-tabs v-model="appSubTab" style="margin-top: 0">
+                  <!-- 待审批 -->
+                  <el-tab-pane label="待审批" name="pending">
                     <el-card>
                       <template #header>
                         <div class="card-header">
@@ -417,15 +435,15 @@
                         </div>
                       </template>
                       <el-table :data="teamApplications" v-loading="loadingApplications" stripe>
-                        <el-table-column prop="type" label="类型" width="100">
+                        <el-table-column prop="applyType" label="类型" width="100">
                           <template #default="{ row }">
-                            <el-tag :type="getApplicationTypeTag(row.type)" size="small">
-                              {{ getApplicationTypeText(row.type) }}
+                            <el-tag :type="getApplicationTypeTag(row.applyType)" size="small">
+                              {{ getApplicationTypeText(row.applyType) }}
                             </el-tag>
                           </template>
                         </el-table-column>
                         <el-table-column prop="applicantName" label="申请人" width="120" />
-                        <el-table-column prop="reason" label="申请原因" min-width="200" show-overflow-tooltip />
+                        <el-table-column prop="applyReason" label="申请原因" min-width="200" show-overflow-tooltip />
                         <el-table-column prop="status" label="状态" width="100">
                           <template #default="{ row }">
                             <el-tag :type="getApplicationStatusTag(row.status)" size="small">
@@ -463,8 +481,54 @@
                       </el-table>
                       <el-empty v-if="teamApplications.length === 0 && !loadingApplications" description="暂无待审批申请" />
                     </el-card>
-                  </el-col>
-                </el-row>
+                  </el-tab-pane>
+
+                  <!-- 审批记录 -->
+                  <el-tab-pane label="审批记录" name="history">
+                    <el-card>
+                      <template #header>
+                        <div class="card-header">
+                          <span>审批记录（已处理）</span>
+                        </div>
+                      </template>
+                      <el-table :data="approvalHistory" v-loading="loadingApprovalHistory" stripe>
+                        <el-table-column prop="applyType" label="类型" width="100">
+                          <template #default="{ row }">
+                            <el-tag :type="getApplicationTypeTag(row.applyType)" size="small">
+                              {{ getApplicationTypeText(row.applyType) }}
+                            </el-tag>
+                          </template>
+                        </el-table-column>
+                        <el-table-column prop="applicantName" label="申请人" width="110" />
+                        <el-table-column prop="applyReason" label="申请原因" min-width="160" show-overflow-tooltip />
+                        <el-table-column prop="status" label="结果" width="100">
+                          <template #default="{ row }">
+                            <el-tag :type="getApplicationStatusTag(row.status)" size="small">
+                              {{ getApplicationStatusText(row.status) }}
+                            </el-tag>
+                          </template>
+                        </el-table-column>
+                        <el-table-column prop="handlerName" label="处理人" width="100" />
+                        <el-table-column prop="handleTime" label="处理时间" width="180">
+                          <template #default="{ row }">
+                            {{ formatDate(row.handleTime || row.updateTime) }}
+                          </template>
+                        </el-table-column>
+                        <el-table-column prop="handleRemark" label="处理备注" min-width="140" show-overflow-tooltip>
+                          <template #default="{ row }">
+                            {{ row.handleRemark || '-' }}
+                          </template>
+                        </el-table-column>
+                        <el-table-column prop="createTime" label="申请时间" width="180">
+                          <template #default="{ row }">
+                            {{ formatDate(row.createTime) }}
+                          </template>
+                        </el-table-column>
+                      </el-table>
+                      <el-empty v-if="approvalHistory.length === 0 && !loadingApprovalHistory" description="暂无审批记录" />
+                    </el-card>
+                  </el-tab-pane>
+                </el-tabs>
               </el-tab-pane>
 
               <el-tab-pane label="团队任务" name="tasks">
@@ -711,6 +775,25 @@
     >
       <el-tabs v-model="activeProfileTab">
         <el-tab-pane label="个人信息" name="info">
+          <!-- 头像上传 -->
+          <div class="avatar-upload-area">
+            <el-avatar :size="80" :src="profileAvatar" class="profile-avatar">
+              {{ userAvatarInitial }}
+            </el-avatar>
+            <div class="avatar-upload-actions">
+              <el-upload
+                :show-file-list="false"
+                :before-upload="handleAvatarBefore"
+                :http-request="handleAvatarUpload"
+                accept="image/jpeg,image/png,image/gif,image/webp"
+              >
+                <el-button size="small" type="primary" plain :loading="uploadingAvatar">
+                  {{ uploadingAvatar ? '上传中…' : '更换头像' }}
+                </el-button>
+              </el-upload>
+              <div class="avatar-tip">支持 jpg/png/gif/webp,不超过 2MB</div>
+            </div>
+          </div>
           <el-descriptions :column="1" border style="margin-bottom: 20px">
             <el-descriptions-item label="用户名">
               {{ userStore.userInfo?.username }}
@@ -776,7 +859,7 @@ import {
   Document, ArrowDown, DataLine, List, UserFilled,
   Clock, Loading, CircleCheck, Plus, Edit, Delete,
   User, Connection, Reading, Bell, Tickets,
-  SwitchButton, Check, Close, ChatDotRound
+  SwitchButton, Check, Close, ChatDotRound, Key
 } from '@element-plus/icons-vue'
 import AgentChat from '@/components/AgentChat.vue'
 import { useUserStore } from '@/stores/user'
@@ -785,8 +868,8 @@ import { useTeamStore } from '@/stores/team'
 import { useNotificationStore } from '@/stores/notification'
 import {
   getTeamMembers, getTeamTasks, getTeamMemberStats, deleteTeam, inviteMember, removeMember, toggleTaskPublic,
-  applyJoinTeam, applyLeaveTeam, getTeamApplications, handleTeamApplication,
-  getTaskChangeLogs
+  applyJoinTeam, applyLeaveTeam, getTeamApplications, handleTeamApplication, transferTeamAdmin,
+  getTaskChangeLogs, uploadAvatar
 } from '@/api'
 
 const router = useRouter()
@@ -794,6 +877,13 @@ const userStore = useUserStore()
 const taskStore = useTaskStore()
 const teamStore = useTeamStore()
 const notificationStore = useNotificationStore()
+
+// 管理员判断：系统当前没有角色字段（user 表无 role 列），按 README 约定 username='admin' 视为管理员；
+// 同时兼容未来新增 role='ADMIN' 字段的情况
+const isAdmin = computed(() => {
+  const info = userStore.userInfo
+  return !!(info && (info.role === 'ADMIN' || info.username === 'admin'))
+})
 
 const activeMenu = ref('dashboard')
 const statusFilter = ref('')
@@ -817,6 +907,10 @@ const changeLogs = ref([])
 const loadingChangeLogs = ref(false)
 const teamApplications = ref([])
 const loadingApplications = ref(false)
+// 审批记录（已处理的历史）
+const appSubTab = ref('pending')
+const approvalHistory = ref([])
+const loadingApprovalHistory = ref(false)
 
 const taskFormRef = ref(null)
 const teamFormRef = ref(null)
@@ -911,6 +1005,14 @@ const canTogglePublic = computed(() => {
     teamMembers.value.some(m => m.userId === userStore.userInfo.id && m.role === 'ADMIN')
 })
 
+// 团队卡片标签：我管理的团队（创建者或团队角色为 ADMIN/OWNER）/ 我加入的团队
+const isManagedTeam = (team) => {
+  if (!team || !userStore.userInfo) return false
+  const myRole = team.role || ''
+  return team.creatorId === userStore.userInfo.id ||
+    myRole === 'ADMIN' || myRole === 'OWNER'
+}
+
 const getStatusType = (status) => {
   const map = {
     PENDING_ASSIGN: 'info',
@@ -920,6 +1022,30 @@ const getStatusType = (status) => {
     CANCELLED: 'danger'
   }
   return map[status] || 'info'
+}
+
+// 转让管理员确认
+const confirmTransferAdmin = async (member) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要将「${member.nickname || member.username}」设为团队管理员吗？\n转让后你将变为普通成员，该操作不可撤销。`,
+      '转让管理员',
+      { confirmButtonText: '确认转让', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) {
+    return // 取消
+  }
+  try {
+    await transferTeamAdmin(selectedTeam.value.id, member.userId)
+    ElMessage.success(`已转让管理员给 ${member.nickname || member.username}`)
+    // 更新本地创建者（避免刷新前 isTeamCreator 判断滞后）
+    if (selectedTeam.value) selectedTeam.value.creatorId = member.userId
+    // 刷新团队数据（成员角色变了）
+    await loadTeamData(selectedTeam.value.id)
+    await teamStore.fetchTeams()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '转让失败')
+  }
 }
 
 const getStatusText = (status) => {
@@ -966,8 +1092,13 @@ const getNotificationTypeText = (type) => {
   const map = {
     SYSTEM: '系统通知',
     TASK: '任务通知',
+    TASK_ASSIGN: '任务分配',
     TEAM_APPLY: '团队申请',
-    APPROVAL: '审批结果'
+    APPROVAL: '审批结果',
+    TEAM_APPROVE: '加入通过',
+    TEAM_JOIN_REJECTED: '加入被拒',
+    TEAM_LEAVE_APPROVED: '退出通过',
+    TEAM_LEAVE_REJECTED: '退出被拒'
   }
   return map[type] || type
 }
@@ -976,8 +1107,13 @@ const getNotificationTypeTag = (type) => {
   const map = {
     SYSTEM: 'primary',
     TASK: 'success',
+    TASK_ASSIGN: 'success',
     TEAM_APPLY: 'warning',
-    APPROVAL: 'info'
+    APPROVAL: 'info',
+    TEAM_APPROVE: 'success',
+    TEAM_JOIN_REJECTED: 'danger',
+    TEAM_LEAVE_APPROVED: 'success',
+    TEAM_LEAVE_REJECTED: 'danger'
   }
   return map[type] || 'info'
 }
@@ -1044,12 +1180,55 @@ const goPlaza = () => {
   router.push('/plaza')
 }
 
+const goLoginLog = () => {
+  router.push('/login-log')
+}
+
 const showProfileDialog = ref(false)
 const activeProfileTab = ref('info')
 const profileFormRef = ref(null)
 const passwordFormRef = ref(null)
 const savingProfile = ref(false)
 const savingPassword = ref(false)
+const uploadingAvatar = ref(false)
+
+// 当前用户头像（相对路径 /uploads/avatar/xxx，经 Vite 代理访问后端）
+const profileAvatar = computed(() => userStore.userInfo?.avatar || '')
+// 头像未设置时的兜底首字母
+const userAvatarInitial = computed(() => {
+  const name = userStore.userInfo?.nickname || userStore.userInfo?.username || 'U'
+  return name.charAt(0).toUpperCase()
+})
+// 上传前预检：类型 + 大小
+const handleAvatarBefore = (file) => {
+  const okType = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)
+  if (!okType) {
+    ElMessage.warning('仅支持 jpg/png/gif/webp 格式的图片')
+    return false
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    ElMessage.warning('图片大小不能超过 2MB')
+    return false
+  }
+  return true
+}
+// 自定义上传：调后端 /user/avatar，成功后更新全局用户信息（右上角头像即时生效）
+const handleAvatarUpload = async ({ file }) => {
+  uploadingAvatar.value = true
+  try {
+    const res = await uploadAvatar(file)
+    const url = res.data || ''
+    if (userStore.userInfo) {
+      userStore.userInfo.avatar = url
+    }
+    ElMessage.success('头像更新成功')
+  } catch (error) {
+    console.error('头像上传失败:', error)
+    ElMessage.error('头像上传失败，请重试')
+  } finally {
+    uploadingAvatar.value = false
+  }
+}
 
 const profileForm = ref({
   nickname: '',
@@ -1102,6 +1281,8 @@ const handleCommand = async (command) => {
     }
   } else if (command === 'profile') {
     openProfileDialog()
+  } else if (command === 'loginLog') {
+    router.push('/login-log')
   } else if (command === 'operationLog') {
     router.push('/operation-log')
   }
@@ -1179,7 +1360,7 @@ const backToTeamList = () => {
 
 const handleTeamTabChange = async (tab) => {
   if (tab === 'applications' && isTeamAdmin.value) {
-    await loadTeamApplications()
+    await Promise.all([loadTeamApplications(), loadApprovalHistory()])
   }
 }
 
@@ -1386,13 +1567,36 @@ const loadTeamApplications = async () => {
   }
 }
 
+// 审批记录：查已处理（APPROVED + REJECTED）的申请，合并按处理时间倒序
+const loadApprovalHistory = async () => {
+  if (!selectedTeam.value || !isTeamAdmin.value) return
+  loadingApprovalHistory.value = true
+  try {
+    const [okRes, noRes] = await Promise.all([
+      getTeamApplications({ teamId: selectedTeam.value.id, status: 'APPROVED', pageNum: 1, pageSize: 100 }),
+      getTeamApplications({ teamId: selectedTeam.value.id, status: 'REJECTED', pageNum: 1, pageSize: 100 })
+    ])
+    const okList = okRes.data?.records || okRes.data?.list || okRes.data || []
+    const noList = noRes.data?.records || noRes.data?.list || noRes.data || []
+    approvalHistory.value = [...okList, ...noList].sort((a, b) => {
+      const ta = (a.handleTime || a.updateTime || a.createTime || '')
+      const tb = (b.handleTime || b.updateTime || b.createTime || '')
+      return String(tb).localeCompare(String(ta))
+    })
+  } catch (error) {
+    console.error('加载审批记录失败:', error)
+  } finally {
+    loadingApprovalHistory.value = false
+  }
+}
+
 const handleApplication = async (application, action) => {
   try {
     await handleTeamApplication(application.id, {
       status: action === 'approve' ? 'APPROVED' : 'REJECTED'
     })
     ElMessage.success(action === 'approve' ? '已通过' : '已拒绝')
-    await loadTeamApplications()
+    await Promise.all([loadTeamApplications(), loadApprovalHistory()])
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '操作失败')
   }
@@ -1659,6 +1863,14 @@ onMounted(() => {
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.3s;
+  margin-bottom: 20px;
+}
+
+/* 我加入的团队标签：青色系（与"我管理的团队"绿色区分） */
+.team-tag-joined {
+  background: #e6fffb !important;
+  border-color: #87e8de !important;
+  color: #08979c !important;
 }
 
 .team-card:hover {
@@ -1833,6 +2045,36 @@ onMounted(() => {
   font-size: 13px;
   color: #606266;
   line-height: 1.5;
+}
+
+/* —— 个人中心头像上传 —— */
+.avatar-upload-area {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 20px;
+  padding: 16px;
+  background: #f7f9fc;
+  border: 1px dashed #dcdfe6;
+  border-radius: 8px;
+}
+
+.profile-avatar {
+  background: #409eff;
+  color: #fff;
+  font-size: 28px;
+  flex-shrink: 0;
+}
+
+.avatar-upload-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.avatar-tip {
+  font-size: 12px;
+  color: #909399;
 }
 </style>
 

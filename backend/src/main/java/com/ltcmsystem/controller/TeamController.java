@@ -7,6 +7,7 @@ import com.ltcmsystem.dto.TeamApplicationDTO;
 import com.ltcmsystem.dto.TeamApplyHandleDTO;
 import com.ltcmsystem.dto.TeamDTO;
 import com.ltcmsystem.dto.TeamMemberDTO;
+import com.ltcmsystem.dto.TransferAdminDTO;
 import com.ltcmsystem.entity.Team;
 import com.ltcmsystem.entity.TeamApplication;
 import com.ltcmsystem.entity.User;
@@ -125,6 +126,13 @@ public class TeamController {
     public Result<Void> removeMember(@PathVariable Long teamId, @PathVariable Long memberId) {
         Long userId = UserContext.getUserId();
         teamService.removeMember(teamId, memberId, userId);
+        return Result.success();
+    }
+
+    @PutMapping("/{teamId}/transfer-admin")
+    public Result<Void> transferAdmin(@PathVariable Long teamId, @Valid @RequestBody TransferAdminDTO transferDTO) {
+        Long userId = UserContext.getUserId();
+        teamService.transferAdmin(teamId, transferDTO.getNewAdminId(), userId);
         return Result.success();
     }
 

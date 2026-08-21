@@ -5,8 +5,11 @@
 import pymysql
 import threading
 import re
+import logging
 from datetime import datetime, timedelta
 from config import DB_CONFIG
+
+logger = logging.getLogger(__name__)
 
 _local = threading.local()
 
@@ -69,6 +72,32 @@ def get_user_by_id(user_id):
         "SELECT id, username, nickname, email, avatar FROM user WHERE id = %s AND deleted = 0",
         (user_id,), fetch_all=False
     )
+
+
+def log_ai_chat(user_id, ip_address='', user_agent=''):
+    """记录一次 AI 助手对话到操作日志表（operationType=AI_CHAT, module=agent）
+    失败不影响主流程（静默降级）
+    """
+    try:
+        user = get_user_by_id(user_id) or {}
+        username = user.get('username') or ''
+        nickname = user.get('nickname') or username or ''
+        conn = get_db()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO operation_log
+                  (user_id, username, nickname, operation_type, operation_desc, module,
+                   target_id, target_name, ip_address, user_agent, create_time, update_time, deleted)
+                VALUES (%s, %s, %s, 'AI_CHAT', 'AI助手对话', 'agent', NULL, NULL, %s, %s, NOW(), NOW(), 0)
+                """,
+                (user_id, username, nickname, ip_address or '', user_agent or '')
+            )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning(f'[DB] 记录AI对话日志失败(不影响对话): {e}')
+        return False
 
 
 # ============== 任务相关查询 ==============

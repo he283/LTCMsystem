@@ -7,6 +7,8 @@ from flask_cors import CORS
 from datetime import datetime, timedelta
 
 import logging
+import threading
+import time
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 
 from config import (
@@ -35,6 +37,14 @@ def _mask_key(key: str) -> str:
     if not key or len(key) <= 8:
         return '****'
     return f'{key[:4]}****{key[-4:]}'
+
+
+def _client_ip(req) -> str:
+    """从 Flask request 提取客户端 IP（兼容反向代理 X-Forwarded-For）"""
+    xff = req.headers.get('X-Forwarded-For', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return req.remote_addr or ''
 
 
 # —— 🧹 精简辅助：把冗长的 source / message 压成一行短标签（前端弹窗不显示一大坨）
@@ -237,9 +247,39 @@ def index():
     '''
 
 
+# —— LLM 连通性 ping：后台线程 + 全局缓存 ——
+# 之前的实现是 health 每次同步等 ping(最多6s)，导致前端偶发 timeout；
+# 现在 health 立即返回缓存结果，ping 由后台线程持续刷新，health 永远秒回。
+_llm_ping_cache = {'ok': None, 'msg': None, 'ts': 0.0}
+_ping_lock = threading.Lock()
+
+
+def _background_ping():
+    """后台执行一次 LLM ping，结果写入全局缓存（带时间戳）"""
+    try:
+        from services.langchain_llm import ping_llm_langchain
+        ok, msg = ping_llm_langchain()
+    except Exception as e:
+        ok, msg = False, f'PING 异常: {type(e).__name__}: {e}'
+    with _ping_lock:
+        _llm_ping_cache['ok'] = ok
+        _llm_ping_cache['msg'] = msg
+        _llm_ping_cache['ts'] = time.time()
+
+
+def _get_cached_ping(max_age_secs=30):
+    """返回缓存的 ping 结果；缓存过期时启动后台刷新并返回旧值（可能为 None=检测中）"""
+    with _ping_lock:
+        ok, msg, ts = _llm_ping_cache['ok'], _llm_ping_cache['msg'], _llm_ping_cache['ts']
+    if time.time() - ts > max_age_secs:
+        threading.Thread(target=_background_ping, daemon=True).start()
+    return ok, msg
+
+
 @app.route('/agent/health', methods=['GET'])
 def health():
-    """健康检查：显示服务状态 + 配置来源（特别是 API Key 到底来自哪里，便于调试）"""
+    """健康检查：显示服务状态 + 配置来源（特别是 API Key 到底来自哪里，便于调试）
+    注意：LLM 连通性通过后台线程异步检测，本接口不等待，保证毫秒级响应。"""
     _log_startup_config()
     from config import (
         LLM_ENABLED, LLM_ENABLED_SRC,
@@ -250,30 +290,12 @@ def health():
         CONTEXT_WINDOW_SIZE, CHAT_HISTORY_MAX_MSGS, CHAT_HISTORY_TTL_SECS,
         LLM_USE_ENV, LLM_USE_ENV_SRC,
     )
-    # 做一次轻量连通性测试（不超过3秒）——可选
+    # 立即返回缓存的 ping 结果（None=首次检测中；后台线程刷新，不阻塞本请求）
     llm_ping_ok = None
     llm_ping_msg = None
     if LLM_ENABLED:
         try:
-            from services.langchain_llm import ping_llm_langchain
-            import threading
-            result_box = []
-
-            def _ping():
-                try:
-                    ok, msg = ping_llm_langchain()
-                    result_box.append((ok, msg))
-                except Exception as e:
-                    result_box.append((False, str(e)))
-
-            t = threading.Thread(target=_ping, daemon=True)
-            t.start()
-            t.join(timeout=6)
-            if result_box:
-                llm_ping_ok, llm_ping_msg = result_box[0]
-            else:
-                llm_ping_ok = False
-                llm_ping_msg = 'PING 超时 (>6s)'
+            llm_ping_ok, llm_ping_msg = _get_cached_ping()
         except Exception as e:
             llm_ping_ok = False
             llm_ping_msg = f'PING 异常: {type(e).__name__}: {e}'
@@ -429,6 +451,12 @@ def chat():
     try:
         app.logger.info(f'[CHAT] user_id={user_id}, chat_id={chat_id}, message="{message[:80]}"')
         app.logger.info(f'[CHAT] 直接匹配: _match_intent(message)={_match_intent(message)}')
+        # 记录 AI 使用日志到 operation_log（失败不影响对话）
+        try:
+            from services.db_service import log_ai_chat
+            log_ai_chat(user_id, _client_ip(request), request.headers.get('User-Agent', ''))
+        except Exception:
+            pass
         reply = get_reply(user_id, message, chat_id=chat_id)
         app.logger.info(
             f'[CHAT] reply type={reply.get("type")}, content_length={len(reply.get("content", ""))} '
@@ -466,6 +494,13 @@ def chat_stream():
         return _error('消息内容不能为空')
 
     app.logger.info(f'[CHAT][STREAM] user_id={user_id}, chat_id={chat_id}, message="{message[:80]}"')
+
+    # 记录 AI 使用日志到 operation_log（失败不影响对话）
+    try:
+        from services.db_service import log_ai_chat
+        log_ai_chat(user_id, _client_ip(request), request.headers.get('User-Agent', ''))
+    except Exception:
+        pass
 
     def _generate():
         try:
@@ -591,4 +626,5 @@ if __name__ == '__main__':
         print('=' * 60)
     except Exception:
         pass
-    app.run(host=HOST, port=PORT, debug=DEBUG)
+    # threaded=True:多线程处理请求,避免大模型流式生成期间阻塞 /agent/health 等短请求(前端会5s超时)
+    app.run(host=HOST, port=PORT, debug=DEBUG, threaded=True)

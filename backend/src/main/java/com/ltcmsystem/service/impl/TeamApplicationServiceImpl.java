@@ -198,6 +198,11 @@ public class TeamApplicationServiceImpl extends ServiceImpl<TeamApplicationMappe
         application.setStatus(status);
         application.setHandleRemark(handleRemark);
         application.setHandlerId(handlerId);
+        // 填充处理人昵称（审批记录需要展示）
+        User handlerUser = userMapper.selectById(handlerId);
+        application.setHandlerName(handlerUser != null
+                ? (handlerUser.getNickname() != null ? handlerUser.getNickname() : handlerUser.getUsername())
+                : null);
         application.setHandleTime(LocalDateTime.now());
         teamApplicationMapper.updateById(application);
 

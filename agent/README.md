@@ -6,11 +6,11 @@
 - ✅ **今日任务规划**：根据优先级和截止时间智能推荐今日任务
 - ✅ **团队信息查询**：所在团队、角色、未读通知
 - ✅ **自然语言对话**：直接用中文提问，如"我今天做什么"、"有没有逾期任务"
-- ✅ **大模型增强（DeepSeek）**：数据驱动查询由 DeepSeek LLM 生成自然语言、有洞察的回复
+- ✅ **大模型增强（多供应商）**：数据驱动查询由大模型生成自然语言、有洞察的回复（默认 `agnes-2.5-flash`，可切 `hy3` / `deepseek`，见 MODEL_PROVIDER）
 - ✅ **LangChain + LangGraph 状态机**：工作流可视化编排，节点路由清晰可追溯
-- ✅ **流式输出（打字机效果）**：`POST /agent/chat/stream`，Flask stream_with_context + 前端 `fetch + ReadableStream` 逐字符渲染
+- ✅ **流式输出（仿 DeepSeek 网页版「在线思考」）**：`POST /agent/chat/stream`，Flask stream_with_context + 前端 `fetch + ReadableStream`；提问后立即反馈阶段状态（分析中/查询中/思考中），思考链（reasoning_content）实时渲染「🧠 深度思考」面板，正文 LLM 原生 token 级流式逐字输出（`LLM_NATIVE_STREAM` 可切回旧版打字机）；**长回复自动拆小片（40字/片）平滑输出**，等待期实时显示「已等待 Ns」计时、正文静默期显示「正在继续生成…」
 - ✅ **聊天历史记录（刷新不丢）**：LRU+TTL 内存缓存，按 `chat_id + user_id` 隔离，接口 `GET/DELETE /agent/history/<chat_id>`，默认支持 6 轮上下文带给 LLM
-- ✅ **配置来源诊断面板**：`_resolve()` 追踪 API Key / 模型等配置到底来自「环境变量」还是「config.py 默认值」，解决"我填的 key 不生效"困惑；`/agent/health` 同时做 DeepSeek PING 连通性检测
+- ✅ **配置来源诊断面板**：`_resolve()` 追踪 API Key / 模型等配置到底来自「环境变量」还是「config.py 默认值」，解决"我填的 key 不生效"困惑；`/agent/health` 同时做大模型 PING 连通性检测（**后台异步检测 + 缓存，health 毫秒级返回，前端永不超时**）
 
 ---
 
@@ -22,9 +22,9 @@
 |------|------|------|
 | Web 服务 | Flask 3.0 | API 接口层，端口 5001；支持流式（stream_with_context + text/plain + no-cache） |
 | 数据库 | PyMySQL | 直连 MySQL LTCMsystem 数据库查询结构化数据 |
-| 大模型接入 | LangChain ChatOpenAI | 对接 DeepSeek 兼容端点（https://api.deepseek.com/v1） |
+| 大模型接入 | LangChain ChatOpenAI | 对接 OpenAI 兼容端点（默认 agnes-ai：apihub.agnes-ai.com） |
 | 对话工作流 | LangGraph StateGraph | 状态机编排：意图识别（含上下文记忆）→ 查DB → LLM润色 → 返回；含流式版本 |
-| 模型 | deepseek-v4-flash | 低成本、高速度，满足任务管理场景 |
+| 模型 | agnes-2.5-flash（默认） | 可在 MODEL_PROVIDER 切换：hy3（腾讯混元）/ deepseek 官方 |
 | 聊天历史 | LRU + TTL 内存缓存 | services/chat_history.py，按 chat_id + user_id 隔离，默认 100 条 / 4 小时 |
 | 配置诊断 | _resolve() 来源追踪 | 每个关键配置都能告知「来自环境变量」还是「config.py 默认值」，并附解决 tip |
 | 降级机制 | 本地规则 + requests 直连 | LLM/LangGraph 不可用时自动降级，保证可用性；本地草稿**强制列出任务标题+编号** |
@@ -51,7 +51,7 @@ static_reply（静态意图）             data_query（数据驱动意图）
           END
      
 注意：data_query 节点完成后会进入条件路由：
-  • LLM_ENABLED=True 且 context_data 非空 → llm_polish（LangChain调用 deepseek-v4-flash 润色）
+  • LLM_ENABLED=True 且 context_data 非空 → llm_polish（LangChain 调用当前 MODEL_PROVIDER 的模型润色）
   • 否则 → 直接跳过润色，使用本地草稿
   • llm_polish 失败 → 自动 fallback 到本地草稿（不报错、不影响使用）
 ```
@@ -71,7 +71,7 @@ static_reply（静态意图）             data_query（数据驱动意图）
 # ============================================================
 # 配置优先级硬规则（很重要！解决"我换了模型/Key却不生效"困惑）
 # ============================================================
-#  第 0 步：通过 MODEL_PROVIDER 选择供应商预设（可选 modelscope / deepseek / custom）
+#  第 0 步：通过 MODEL_PROVIDER 选择供应商预设（可选 agnes-2.5-flash / hy3 / deepseek）
 #  第 1 步：LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 环境变量（最高优先级）
 #  第 2 步：DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL 环境变量（兼容历史写法）
 #  第 3 步：当前 MODEL_PROVIDER 预设的 default_xxx 值
@@ -86,27 +86,27 @@ AGENT_PORT = 5001
 DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME (LTCMsystem)
 
 # ===== ★★★ 大模型供应商选择（MODEL_PROVIDER）★★★ =====
-#   modelscope → 阿里魔搭 ModelScope 推理端点（默认；deepseek-ai/DeepSeek-V4-Flash-0731）
-#   deepseek   → DeepSeek 官方端点（api.deepseek.com，deepseek-v4-flash）
-#   custom     → 自定义 OpenAI 兼容端点（SiliconFlow/OneAPI/LocalAI 等，自己填 LLM_BASE_URL/MODEL/KEY）
-MODEL_PROVIDER, MODEL_PROVIDER_SRC = _resolve('MODEL_PROVIDER', 'modelscope')
-MODEL_PROVIDER = MODEL_PROVIDER.lower().strip() or 'modelscope'
+#   agnes-2.5-flash → agnes-ai 端点（默认；apihub.agnes-ai.com，模型 agnes-2.5-flash）
+#   hy3            → 腾讯混元 huanyuan3（tokenhub.tencentmaas.com）
+#   deepseek       → DeepSeek 官方端点（api.deepseek.com，deepseek-v4-flash）
+MODEL_PROVIDER, MODEL_PROVIDER_SRC = _resolve('MODEL_PROVIDER', 'agnes-2.5-flash')
+MODEL_PROVIDER = MODEL_PROVIDER.lower().strip() or 'agnes-2.5-flash'
 
 _PROVIDER_PRESETS = {
     'deepseek':   {'default_base_url':'https://api.deepseek.com/v1',
-                   'default_api_key': 'your-key',
+                   'default_api_key': 'your-deepseek-key-here',
                    'default_model':   'deepseek-v4-flash',
                    'display_name':    'DeepSeek 官方'},
-    'modelscope': {'default_base_url':'https://api-inference.modelscope.cn/v1',
-                   'default_api_key': 'your-key',  # ModelScope Token
-                   'default_model':   'deepseek-ai/DeepSeek-V4-Flash-0731',       # ModelScope Model-Id 必填
-                   'display_name':    'ModelScope 魔搭'},
-    'custom':     {'default_base_url':'https://api.deepseek.com/v1',
-                   'default_api_key': 'sk-xxx',
-                   'default_model':   'deepseek-v4-flash',
-                   'display_name':    '自定义 OpenAI 兼容端点'},
+    'agnes-2.5-flash': {'default_base_url':'https://apihub.agnes-ai.com/v1/chat/completions',
+                        'default_api_key': 'sk-xxx（已预设）',
+                        'default_model':   'agnes-2.5-flash',
+                        'display_name':    'agnes'},
+    'hy3':       {'default_base_url':'https://tokenhub.tencentmaas.com/v1',
+                  'default_api_key': 'sk-xxx（已预设）',
+                  'default_model':   'hy3',
+                  'display_name':    'huanyuan3'},
 }
-_preset = _PROVIDER_PRESETS.get(MODEL_PROVIDER, _PROVIDER_PRESETS['modelscope'])
+_preset = _PROVIDER_PRESETS.get(MODEL_PROVIDER, _PROVIDER_PRESETS['agnes-2.5-flash'])
 MODEL_PROVIDER_DISPLAY = _preset.get('display_name', MODEL_PROVIDER)
 
 # ===== 通用 LLM 三件套（新代码 import LLM_*，老代码仍读 DEEPSEEK_*，二者是 alias） =====
@@ -132,7 +132,7 @@ DEEPSEEK_MAX_TOKENS  = int(_resolve('LLM_MAX_TOKENS',  '2000')[0])
 LLM_FALLBACK_TO_LOCAL = True
 
 # 思维链（Reasoning / reasoning_content）显示
-#   ModelScope 的 DeepSeek-V4-Flash-0731、DeepSeek-R1 等会返回推理过程文本；
+#   部分供应商端点（如 agnes-2.5-flash、DeepSeek-R1 等）会返回推理过程文本；
 #   True=用 <details><summary>🧠 思考过程</summary>...</details> 折叠块和答案一起渲染；
 #   False=只输出最终回答，不显示推理过程（更简洁，token消耗一样）
 SHOW_REASONING, SHOW_REASONING_SRC = _resolve('SHOW_REASONING', 'True')
@@ -160,17 +160,19 @@ VENV_PYTHON = r'D:\Code\python\AI\.venv\Scripts\python.exe'
 ### 一键切换供应商（不用改 config.py 代码，用环境变量更方便）
 
 ```bash
-# 1️⃣ 切换到 ModelScope 魔搭（默认推荐 —— 已在 config.py 预设好 base_url、ms-开头的 Token、Model-Id）
-set MODEL_PROVIDER=modelscope
-# 如要自定义 Token（覆盖预设的 ms-xxx）：
-set LLM_API_KEY=ms-your-own-modelscope-token
+# 1️⃣ 切换到 agnes（默认推荐 —— 已在 config.py 预设好 base_url、api_key、model）
+set MODEL_PROVIDER=agnes-2.5-flash
+# 如要自定义 Key（覆盖预设的 sk-xxx）：
+set LLM_API_KEY=sk-your-own-agnes-key
 
-# 2️⃣ 切换到 DeepSeek 官方
+# 2️⃣ 切换到腾讯混元 huanyuan3（tokenhub.tencentmaas.com）
+set MODEL_PROVIDER=hy3
+
+# 3️⃣ 切换到 DeepSeek 官方
 set MODEL_PROVIDER=deepseek
 set LLM_API_KEY=sk-your-own-deepseek-key
 
-# 3️⃣ 切换到自定义 OpenAI 兼容端点（SiliconFlow / OneAPI / 本地 vLLM 等）
-set MODEL_PROVIDER=custom
+# 4️⃣ 任意 OpenAI 兼容端点（SiliconFlow / OneAPI / 本地 vLLM 等），自己填三件套
 set LLM_BASE_URL=https://api.siliconflow.cn/v1
 set LLM_API_KEY=sk-your-siliconflow-key
 set LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash-0731
@@ -184,8 +186,8 @@ set SHOW_REASONING=True          # True=显示思维链，False=只看最终回�
 
 # 想确认到底哪个生效？
 #   方式一：启动 agent 后命令行第一块 → 每行都带 "(来源: ...)"
-#   方式二：GET /agent/health → config_sources.model_provider + llm_api_key + llm_base_url + llm_model
-#   方式三：前端 AI 助手聊天窗口顶部「⚠️ 配置来源诊断」面板
+#   方式二：GET /agent/health → config_sources.api_key + model + base_url
+#   方式三：前端 AI 助手聊天窗口顶部「供应商·模型名」一键展开「🔧 配置信息」面板
 ```
 
 ### 想让 config.py 预设的 key 生效？先清掉环境变量再重启
@@ -195,7 +197,7 @@ set SHOW_REASONING=True          # True=显示思维链，False=只看最终回�
 Remove-Item Env:MODEL_PROVIDER, Env:LLM_API_KEY, Env:LLM_BASE_URL, Env:LLM_MODEL, Env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
 # 2. 如果是「系统属性 → 高级 → 环境变量」窗口里手动加的，去那里删除对应变量；
 # 3. 关掉所有 CMD / PowerShell 窗口，重新开一个；
-# 4. 重启 agent，再看启动日志 "(来源: ModelScope 魔搭 预设 ...)" → 就是 config 的预设生效了。
+# 4. 重启 agent，再看启动日志 "(来源: agnes 预设 ...)" → 就是 config 的预设生效了。
 ```
 
 ---
@@ -206,7 +208,7 @@ Remove-Item Env:MODEL_PROVIDER, Env:LLM_API_KEY, Env:LLM_BASE_URL, Env:LLM_MODEL
 
 - **Python 虚拟环境**：`D:\Code\python\AI\.venv`（已预装 langchain、langgraph、langchain-openai、flask、pymysql、requests）
 - **MySQL 数据库**：LTCMsystem 运行中，`root / 123456`（默认）
-- **DeepSeek API Key**：已在 `config.py` 填写或通过环境变量注入
+- **大模型 API Key**：已在 `config.py` 预设（agnes-2.5-flash 默认）或通过环境变量覆盖
 
 ### 方式一：使用指定 .venv 直接启动（推荐）
 
@@ -260,11 +262,11 @@ test_langgraph.py 会输出：
 
 ## 🔌 API 接口
 
-### 1. 健康检查（含配置来源诊断 + LLM 连通性 PING）
+### 1. 健康检查（含配置来源诊断 + LLM 连通性 PING，毫秒级返回）
 ```
 GET /agent/health
 ```
-响应示例（重点：`config_sources` 告诉你 Key 来自哪里，`llm_connectivity` 验证能不能真连上 DeepSeek）：
+响应示例（重点：`config_sources` 告诉你 Key 来自哪里，`llm_connectivity` 验证能不能真连上大模型）：
 ```json
 {
   "status": "ok",
@@ -277,45 +279,23 @@ GET /agent/health
     "chat_history_enabled": true,
     "context_window_size": 6
   },
-  "llm_params": {
-    "timeout_secs": 30,
-    "temperature": 0.7,
-    "max_tokens": 2000,
-    "provider": "modelscope",
-    "provider_display": "ModelScope 魔搭",
-    "show_reasoning": true
-  },
   "config_sources": {
-    "model_provider": {
-      "value": "modelscope",
-      "display_name": "ModelScope 魔搭",
-      "source": "config.py 默认值",
-      "tip": "可选值: modelscope / deepseek / custom，环境变量 MODEL_PROVIDER=xxx 切换，重启生效",
-      "supported": ["modelscope", "deepseek", "custom"]
-    },
-    "show_reasoning": {
-      "value": true,
-      "source": "config.py 默认值",
-      "tip": "True=渲染 reasoning_content 为折叠的「🧠 思考过程」Markdown 块；False=只显示最终回答"
-    },
-    "llm_api_key": {
-      "value": "ms-5b****76c8f",
-      "source": "ModelScope 魔搭 预设（MODEL_PROVIDER=\"modelscope\"）",
-      "tip": "优先级: LLM_API_KEY env > DEEPSEEK_API_KEY env > MODEL_PROVIDER 预设"
-    },
-    "llm_base_url": {"value": "https://api-inference.modelscope.cn/v1",
-                     "source": "ModelScope 魔搭 预设（MODEL_PROVIDER=\"modelscope\"）"},
-    "llm_model":    {"value": "deepseek-ai/DeepSeek-V4-Flash-0731",
-                     "source": "ModelScope 魔搭 预设（MODEL_PROVIDER=\"modelscope\"）"},
-    "deepseek_api_key": {"value": "ms-5b****76c8f", "source": "ModelScope 魔搭 预设 ...",
-                         "tip": "旧版兼容名，新代码读 llm_api_key"}
+    "api_key":       {"value": "sk-Iu****rkQJ", "source": "config.py 预设（MODEL_PROVIDER=\"agnes-2.5-flash\"）", "provider": "agnes"},
+    "model":         {"value": "agnes-2.5-flash", "source": "config.py 预设（MODEL_PROVIDER=\"agnes-2.5-flash\"）", "provider": "agnes"},
+    "base_url":      {"value": "https://apihub.agnes-ai.com/v1/chat/completions", "source": "config.py 预设（MODEL_PROVIDER=\"agnes-2.5-flash\"）"},
+    "llm_use_env":   {"value": false, "label": "禁用（强制用 config.py）", "source": "config.py 默认值"},
+    "deepseek_api_key":  {"value": "sk-Iu****rkQJ", "source": "config.py 预设（MODEL_PROVIDER=\"agnes-2.5-flash\"）"},
+    "deepseek_base_url": {"value": "https://apihub.agnes-ai.com/v1/chat/completions", "source": "config.py 预设（MODEL_PROVIDER=\"agnes-2.5-flash\"）"},
+    "deepseek_model":    {"value": "agnes-2.5-flash", "source": "config.py 预设（MODEL_PROVIDER=\"agnes-2.5-flash\"）"},
+    "llm_enabled":   {"value": true}
   },
   "llm_connectivity": {
     "ping_ok": true,
-    "message": "🤝 供应商=ModelScope 魔搭(modelscope) | Model=deepseek-ai/DeepSeek-V4-Flash-0731 | Base=https://api-inference.modelscope.cn/v1 | Key来源=ModelScope 魔搭 预设(...) | 连接成功！回复=\"PONG\"，消耗=17 tokens，耗时=482.3ms"
+    "message": "连接成功（12 tokens / 345ms）"
   }
 }
 ```
+> **连通性 ping 为后台异步检测**：`ping_ok` 首次请求可能为 `null`（检测中），缓存 30s 自动刷新；health 接口本身永远毫秒级返回，前端不会因 ping 慢而超时。`ping_ok=false` 时的 message 会区分：限流(429)/超时/真实鉴权错误。
 
 ### 2. 发送消息（对话·非流式 一次性返回）
 ```
@@ -358,7 +338,7 @@ Content-Type: application/json
 }
 ```
 
-### 2a. 发送消息（对话·**流式输出** ✨ 默认推荐）
+### 2a. 发送消息（对话·**流式输出** ✨ 默认推荐，仿 DeepSeek 网页版「在线思考」）
 ```
 POST /agent/chat/stream
 Content-Type: application/json
@@ -377,8 +357,13 @@ X-Accel-Buffering: no
 Connection: keep-alive
 ```
 
-传输格式（按字节 chunk 读取，每 chunk 2~6 个字符，打字机体感）：
+传输格式（三类内容混在一起，前端按 `\0` 前缀区分）：
 ```
+\0__EVENT__:{"type":"status","phase":"analyze","label":"正在分析你的问题…"}
+\0__EVENT__:{"type":"status","phase":"query","label":"正在查询你的任务数据…"}
+\0__EVENT__:{"type":"status","phase":"llm","label":"🧠 大模型正在思考…"}
+\0__EVENT__:{"type":"reasoning","text":"用户"}
+\0__EVENT__:{"type":"reasoning","text":"查看"}
 下午好
 ，管理员！
 ☕ 今天推荐你先处
@@ -386,10 +371,17 @@ Connection: keep-alive
 \0__DONE__:{"type":"markdown","used_llm":true,"used_langgraph":true,"intent":"today_tasks","llm_latency_ms":4216.3,"llm_usage":{"prompt_tokens":1820,"completion_tokens":312,"total_tokens":2132}}
 ```
 
-前端解析约定：
-- 遇到 chunk 以 `\0__DONE__:` 开头 → 前面拼的字符串是正文 content，后面 JSON 作为 meta 落地；
-- 不要用 axios，直接 `fetch(url).then(r => r.body.getReader())` 拿 `ReadableStream`；
-- 参考实现：`frontend/src/components/AgentChat.vue#handleSend()`。
+协议约定（v2 原生流式，`LLM_NATIVE_STREAM=True` 时生效）：
+- **正文增量**：普通文本 chunk（LLM 原生 token 级流式，边生成边吐出；静态意图/本地草稿为 2~6 字符打字机；**巨型 chunk 自动拆成 40 字/片平滑转发**，避免"卡住后一波全出"）
+- **控制事件**：`\0__EVENT__:{json}\n`，单行完整 JSON，前端按 `\0` 前缀识别、不拼入正文
+  - `{"type":"status","phase":"analyze|query|llm|reply|fallback","label":"展示文案"}` —— 阶段状态，前端显示"思考中"状态条（LLM 阶段等待期实时显示「已等待 Ns」计时）
+  - `{"type":"reasoning","text":"思考链增量"}` —— 大模型思考过程（部分端点会返回），前端实时渲染到「🧠 深度思考」面板
+- **结束标记**：`\0__DONE__:{json}` —— 前面拼的字符串是正文 content，后面 JSON 作为 meta 落地（与旧版一致）
+- 前端解析约定：
+  - 不要用 axios，直接 `fetch(url).then(r => r.body.getReader())` 拿 `ReadableStream`；
+  - 缓冲区内找 `\0` 定位控制消息：`\0__EVENT__:` 解析事件（等 `\n` 收尾），`\0__DONE__:` 解析 meta 结束；
+  - 参考实现：`frontend/src/components/AgentChat.vue#handleSend()`；
+- 旧版行为（`LLM_NATIVE_STREAM=False`）：不吐事件，正文为完整生成后的 2~6 字符打字机，前端完全兼容。
 
 ### 3. 聊天历史（按 chat_id 拉取 / 清空）
 ```
@@ -452,19 +444,21 @@ GET /agent/team-analysis/{user_id}
 
 ```
 agent/
-├── app.py                      # Flask入口，注册/agent/*路由
-├── config.py                   # 全部配置（服务、DB、LLM、LangGraph）
+├── app.py                      # Flask入口，注册/agent/*路由（health 含异步 ping 缓存）
+├── config.py                   # 全部配置（服务、DB、LLM 多供应商、LangGraph）
 ├── requirements.txt            # Python依赖（flask、pymysql、requests、langchain、langgraph、langchain-openai）
 ├── start.bat                   # Windows启动脚本（检查.venv路径）
-├── test_llm.py                 # 旧版 requests 直连 DeepSeek 测试
+├── test_llm.py                 # 旧版 requests 直连大模型测试
 ├── test_langgraph.py           # LangChain + LangGraph 综合集成测试
+├── test_agent.py               # Agent 端到端对话测试
+├── test_modelscope_standalone.py # 单一供应商连通性独立测试
 ├── README.md                   # 本文件
 └── services/
     ├── __init__.py
     ├── db_service.py           # MySQL 查询 + 下划线→驼峰转换
     ├── task_analyzer.py        # 任务统计、今日计划、建议生成算法（已含DONE任务逐条清单）
-    ├── llm_service.py          # 旧版 requests 直连 DeepSeek + 重试/脱敏
-    ├── langchain_llm.py        # LangChain ChatOpenAI + LangGraph StateGraph 5节点（含流式版本）
+    ├── llm_service.py          # 旧版 requests 直连 + 重试/脱敏（降级用）
+    ├── langchain_llm.py        # LangChain ChatOpenAI + LangGraph StateGraph 5节点（含流式/大块拆小）
     ├── chat_history.py         # 聊天历史存储（LRU+TTL 内存缓存，按 chat_id+user_id 隔离）
     └── chat_service.py         # 对话入口：流式/非流式；优先LangGraph，失败回退纯函数
 ```
@@ -496,21 +490,26 @@ agent/
 
 ### Q6：我在 config.py 里填的 API Key 没生效？实际调用的是另一个 Key！
 这是**最常见的问题**——因为系统/用户环境变量的优先级高于 config.py。
-1. 先打开 `GET /agent/health` 或前端聊天窗口「⚠️ 配置来源诊断」面板，看 `config_sources.deepseek_api_key.source`：
-   - 显示 `(来源: 环境变量 DEEPSEEK_API_KEY)` → 你电脑里设了环境变量，把 config.py 的值覆盖了；
-   - 显示 `(来源: config.py 默认值)` → 走的是 config.py 里写的。
+1. 先打开 `GET /agent/health` 或前端聊天窗口「🔧 配置信息」面板，看 `config_sources.api_key.source`：
+   - 显示 `(来源: 环境变量 LLM_API_KEY / DEEPSEEK_API_KEY)` → 你电脑里设了环境变量，把 config.py 的值覆盖了；
+   - 显示 `(来源: config.py 预设 ...)` → 走的是 config.py 里写的。
 2. 想让 config.py 的值生效：
    ```powershell
    # 1. 清掉当前 PowerShell 会话的环境变量
-   Remove-Item Env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
-   # 2. 如果是「系统属性 → 高级 → 环境变量」里加的，去那里删除 DEEPSEEK_API_KEY 变量；
+   Remove-Item Env:MODEL_PROVIDER, Env:LLM_API_KEY, Env:LLM_BASE_URL, Env:LLM_MODEL, Env:DEEPSEEK_API_KEY -ErrorAction SilentlyContinue
+   # 2. 如果是「系统属性 → 高级 → 环境变量」里加的，去那里删除对应变量；
    # 3. 关掉所有 CMD / PowerShell 窗口，重新开一个；
-   # 4. 重启 agent，再看 /agent/health 的 source，应该已经变成 config.py 默认值了。
+   # 4. 重启 agent，再看 /agent/health 的 source，应该已经变成 config.py 预设了。
    ```
+3. 注：`LLM_USE_ENV=0`（config.py 默认）会**禁用环境变量覆盖**，强制用 config.py 预设；设为 `1` 才启用「LLM_* env > DEEPSEEK_* env > config 默认」三层优先级。
 
 ### Q7：流式输出怎么用？跟 /agent/chat 有什么区别？
 - `/agent/chat`：一次性返回完整 JSON，请求可能要等 5~20s；
-- `/agent/chat/stream`：边生成边按 2~6 字符吐，打字机体验，请求同样要 5~20s 但**0.5s 内就能看到第一块内容**。
+- `/agent/chat/stream`：**默认启用「原生流式」（`LLM_NATIVE_STREAM=True`，仿 DeepSeek 网页版）**：
+  - 提问后**立即**收到阶段状态事件（分析中 → 查询数据中 → 大模型思考中），等待期不再空白；
+  - 模型思考链（`reasoning_content`）通过 reasoning 事件**实时**渲染到「🧠 深度思考」面板；
+  - 正文为 LLM **token 级流式**，边生成边逐字显示；
+  - 若 `LLM_NATIVE_STREAM=False`，退化为旧版行为：完整生成后再按 2~6 字符打字机吐出；
   - 前端必须用 `fetch + ReadableStream`（axios 不方便拿原始流）；
   - 最后一个 chunk 以 `\0__DONE__:` 开头，后面是 meta JSON；前端要识别并停止拼正文；
   - 完整实现可直接看 `frontend/src/components/AgentChat.vue` 中的 `handleSend()`。
@@ -535,22 +534,22 @@ agent/
    ```
 3. 结构化数据源 `task_analyzer.analyze_user_tasks` 已经返回 `tasks_by_status / done_tasks / done_tasks_recent`，每条都带 `title / task_code / done_time / team_name`，上面 1 和 2 都是从这里取的。
 
-### Q10：我换了模型来源（ModelScope / 硅基流动 / 自建），LLM 用不了怎么办？
+### Q10：我换了模型来源（agnes / 混元 / DeepSeek / 自建），LLM 用不了怎么办？
 现在系统内置了 **MODEL_PROVIDER 多供应商切换机制**，三步走：
-1. **先选供应商**：在当前 cmd/PowerShell 里 `set MODEL_PROVIDER=modelscope | deepseek | custom`；
-   - `modelscope`：直接用用户给你的魔搭那一套（base_url=https://api-inference.modelscope.cn/v1、model=deepseek-ai/DeepSeek-V4-Flash-0731、api_key=ms-5b3a...，config 已预设好）
-   - `deepseek`：切回 DeepSeek 官方（api.deepseek.com/v1、model=deepseek-v4-flash、sk-dbe6...）
-   - `custom`：任意 OpenAI 兼容端点，自己再 set LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+1. **先选供应商**：在当前 cmd/PowerShell 里 `set MODEL_PROVIDER=agnes-2.5-flash | hy3 | deepseek`；
+   - `agnes-2.5-flash`：默认，base_url=https://apihub.agnes-ai.com/v1/chat/completions、model=agnes-2.5-flash、api_key 已预设
+   - `hy3`：腾讯混元（tokenhub.tencentmaas.com/v1、model=hy3、api_key 已预设）
+   - `deepseek`：DeepSeek 官方（api.deepseek.com/v1、model=deepseek-v4-flash、自己填 key）
 2. **覆盖具体参数**（可选，不写就用对应供应商的预设值）：
    ```
-   set LLM_API_KEY=ms-your-own
-   set LLM_BASE_URL=https://api-inference.modelscope.cn/v1
-   set LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash-0731
+   set LLM_API_KEY=sk-your-own
+   set LLM_BASE_URL=https://your-openai-compatible/v1
+   set LLM_MODEL=your-model
    ```
-3. **重启 agent** → 启动命令行第一块就会打 `PROVIDER=ModelScope 魔搭（标识：modelscope，来源：环境变量 MODEL_PROVIDER）` + `Key来源=...` + `BASE_URL=...`，肉眼就能确认生效 → 然后访问 `/agent/health` 看 `llm_connectivity.ping_ok` 做 PING-PONG 连通性验证。
-   - 连不通时 `llm_connectivity.message` 会打印完整报错 `连接失败（provider=... base=... model=...）: 401: invalid api_key / 404 model not found / TIMEOUT`，直接定位哪一项错了。
+3. **重启 agent** → 启动命令行第一块就会打印 `PROVIDER=agnes（标识：agnes-2.5-flash，来源：...）` + `Key来源=...` + `BASE_URL=...`，肉眼就能确认生效 → 然后访问 `/agent/health` 看 `llm_connectivity.ping_ok` 做 PING-PONG 连通性验证。
+   - 连不通时 `llm_connectivity.message` 会打印简短报错（401 鉴权 / 404 模型不存在 / 429 限流 / TIMEOUT 超时），直接定位哪一项错了。
 
-### Q11：ModelScope 返回的 reasoning_content（思维链）会被吃掉吗？能关掉思维链只看回答吗？
+### Q11：模型返回的 reasoning_content（思维链）会被吃掉吗？能关掉思维链只看回答吗？
 **不会被吃掉，完整兼容。** 两条调用路径都处理了：
 - LangChain（`langchain_llm.py`）：`_extract_ai_message_body()` 同时拿 `resp.content` 和 `resp.additional_kwargs.reasoning_content` / `resp.response_metadata.choices[0].message.reasoning_content` 三个位置，保证不同转发端的思维链都能拿到。
 - Requests 直连（`llm_service.py`）：`_call_deepseek_api` 200 成功段直接读 `choices[0].message.reasoning_content | reasoning`。

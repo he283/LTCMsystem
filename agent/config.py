@@ -62,14 +62,15 @@ LLM_USE_ENV = not (str(LLM_USE_ENV).strip() in ('0', 'false', 'False', 'no', 'of
 
 
 # ------------------------------------------------------------
-# MODEL_PROVIDER 选择（支持三种预设 + 自定义）：
-#   deepseek   → 阿里 DeepSeek 官方端点
-#   modelscope → 阿里 魔搭 ModelScope 推理端点（默认使用用户给的那一套）
-#   custom     → 完全自己填 base_url + model，兼容任何 OpenAI 风格的端点（SiliconFlow/OneAPI/新必应等）
+# MODEL_PROVIDER 选择（支持多供应商预设）：
+#   agnes-2.5-flash → agnes-ai 端点（默认；apihub.agnes-ai.com，模型 agnes-2.5-flash）
+#   hy3            → 腾讯混元 huanyuan3（tokenhub.tencentmaas.com，模型 hy3）
+#   deepseek       → DeepSeek 官方端点（api.deepseek.com，模型 deepseek-v4-flash）
+# 也可以不选预设，直接用环境变量 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL 填任意 OpenAI 兼容端点
 # 优先级：环境变量 MODEL_PROVIDER > config.py 默认值
 # ------------------------------------------------------------
-MODEL_PROVIDER, MODEL_PROVIDER_SRC = _resolve('MODEL_PROVIDER', 'hy3')
-MODEL_PROVIDER = str(MODEL_PROVIDER).lower().strip() or 'hy3'
+MODEL_PROVIDER, MODEL_PROVIDER_SRC = _resolve('MODEL_PROVIDER', 'agnes-2.5-flash')
+MODEL_PROVIDER = str(MODEL_PROVIDER).lower().strip() or 'agnes-2.5-flash'
 
 # 各供应商的预设值（如果环境变量没单独覆盖 LLM_BASE_URL/LLM_API_KEY/LLM_MODEL，就用下面这个预设）
 _PROVIDER_PRESETS = {
@@ -81,26 +82,24 @@ _PROVIDER_PRESETS = {
         'default_model':    'deepseek-v4-flash',
         'display_name':     'DeepSeek 官方',
     },
-    'modelscope': {
-        'default_base_url': 'https://api-inference.modelscope.cn/v1',
-        # ⚠️ 占位符：示例里的 ms-5b3a...6c8f 只是演示字符串，不能真实鉴权！
-        #    请到 https://www.modelscope.cn/my/myaccesstoken 申请你自己的 ModelScope Token，
-        #    然后通过环境变量注入（推荐写法，不会把真实密钥写进代码/仓库）：
-        #         set LLM_API_KEY=ms-your-own-valid-token
+    'agnes-2.5-flash': {
+        'default_base_url': 'https://apihub.agnes-ai.com/v1/chat/completions',
+        # ⚠️ 安全提示：请通过环境变量注入 Key（推荐，不会把真实密钥写进代码/仓库）：
+        #         set LLM_API_KEY=sk-your-own-valid-key
         #    或直接改这里（仅本地临时调试用，仓库提交前改回占位符）
-        'default_api_key':  '************',
-        'default_model':    'deepseek-ai/DeepSeek-V4-Flash-0731',            # ModelScope Model-Id（必填）
-        'display_name':     'ModelScope 魔搭',
+        'default_api_key':  'your-deepseek-key-here',
+        'default_model':    'agnes-2.5-flash',
+        'display_name':     'agnes',
     },
     'hy3': {
         'default_base_url': 'https://tokenhub.tencentmaas.com/v1',
-        'default_api_key':  '**************',
+        'default_api_key':  'your-deepseek-key-here',
         'default_model':    'hy3',
         'display_name':     'huanyuan3',
     },
 }
 # 取当前供应商的预设模板
-_preset = _PROVIDER_PRESETS.get(MODEL_PROVIDER, _PROVIDER_PRESETS['hy3'])
+_preset = _PROVIDER_PRESETS.get(MODEL_PROVIDER, _PROVIDER_PRESETS['agnes-2.5-flash'])
 MODEL_PROVIDER_DISPLAY = _preset.get('display_name', MODEL_PROVIDER)
 
 
@@ -295,6 +294,11 @@ CHAT_HISTORY_TTL_SECS = int(_resolve('CHAT_HISTORY_TTL_SECS', str(60 * 60 * 4))[
 
 # 是否启用流式输出（SSE，True=默认走流式 /stream 接口）
 STREAM_ENABLED = _resolve('STREAM_ENABLED', 'True')[0].lower() == 'true'
+
+# 是否启用「大模型原生流式」（仿 DeepSeek 网页版在线思考）
+# True=提问后立即反馈阶段状态（分析中/查询中/思考中），LLM 边生成边逐字输出，等待感大幅降低
+# False=等大模型完整生成后再模拟打字机（旧行为，等待期间只有 loading 动画）
+LLM_NATIVE_STREAM = _resolve('LLM_NATIVE_STREAM', 'True')[0].lower() == 'true'
 
 # Python解释器路径（用于启动脚本）
 VENV_PYTHON = r'D:\Code\python\AI\.venv\Scripts\python.exe'

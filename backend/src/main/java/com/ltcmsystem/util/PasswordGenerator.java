@@ -14,6 +14,6 @@ public class PasswordGenerator {
         System.out.println("BCrypt加密后: " + hashedPassword);
         System.out.println();
         System.out.println("可以使用以下SQL更新数据库中的密码:");
-        System.out.println("UPDATE user SET password = '" + hashedPassword + "' WHERE username = 'admin';");
+        System.out.println("UPDATE user SET password = '" + hashedPassword + "' WHERE username = 'user2';");
     }
 }

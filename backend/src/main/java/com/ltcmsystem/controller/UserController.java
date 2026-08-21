@@ -8,6 +8,7 @@ import com.ltcmsystem.service.UserService;
 import com.ltcmsystem.util.UserContext;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/user")
@@ -40,5 +41,12 @@ public class UserController {
         Long userId = UserContext.getUserId();
         userService.changePassword(userId, changePasswordDTO.getOldPassword(), changePasswordDTO.getNewPassword());
         return Result.success();
+    }
+
+    @PostMapping("/avatar")
+    public Result<String> uploadAvatar(@RequestParam("file") MultipartFile file) {
+        Long userId = UserContext.getUserId();
+        String avatarUrl = userService.updateAvatar(userId, file);
+        return Result.success(avatarUrl);
     }
 }

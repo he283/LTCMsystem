@@ -17,6 +17,7 @@ import com.ltcmsystem.exception.BusinessException;
 import com.ltcmsystem.mapper.TaskMapper;
 import com.ltcmsystem.mapper.TeamMapper;
 import com.ltcmsystem.mapper.UserMapper;
+import com.ltcmsystem.service.NotificationService;
 import com.ltcmsystem.service.OperationLogService;
 import com.ltcmsystem.service.TaskChangeLogService;
 import com.ltcmsystem.service.TaskService;
@@ -35,6 +36,8 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements TaskService {
+
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TaskServiceImpl.class);
 
     private static final Map<String, List<String>> STATUS_TRANSITIONS = new HashMap<>();
 
@@ -55,6 +58,7 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
     private final TeamPermissionService teamPermissionService;
     private final TaskChangeLogService taskChangeLogService;
     private final OperationLogService operationLogService;
+    private final NotificationService notificationService;
 
     @Override
     public List<Task> getUserTasks(Long userId) {
@@ -94,6 +98,9 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
         logOperation(operatorId, OperationTypeEnum.TASK_CREATE, OperationTypeEnum.TASK_CREATE.getDesc(),
                 task.getId(), task.getTitle());
 
+        // 分配通知：创建任务时若有负责人且不是自己，通知负责人
+        notifyAssignee(task.getId(), task.getTitle(), null, task.getAssigneeId(), operatorId);
+
         return task;
     }
 
@@ -123,7 +130,31 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
         logOperation(operatorId, OperationTypeEnum.TASK_UPDATE, OperationTypeEnum.TASK_UPDATE.getDesc(),
                 newTask.getId(), newTask.getTitle());
 
+        // 分配通知：负责人变化时通知新负责人（不是自己才发）
+        notifyAssignee(newTask.getId(), newTask.getTitle(), oldTask.getAssigneeId(), newTask.getAssigneeId(), operatorId);
+
         return newTask;
+    }
+
+    /** 任务分配通知：oldAssignee → newAssignee 变化（或初次分配）时，给新负责人发通知 */
+    private void notifyAssignee(Long taskId, String title, Long oldAssigneeId, Long newAssigneeId, Long operatorId) {
+        try {
+            if (newAssigneeId == null) return;
+            if (newAssigneeId.equals(oldAssigneeId)) return;  // 负责人没变
+            if (newAssigneeId.equals(operatorId)) return;     // 自己分配给自己不通知
+            String teamName = "";
+            Task t = getById(taskId);
+            if (t != null && t.getTeamId() != null) {
+                Team team = teamMapper.selectById(t.getTeamId());
+                if (team != null) teamName = team.getName();
+            }
+            String content = "您被分配了任务「" + title + "」" +
+                    (teamName.isEmpty() ? "" : "（团队：" + teamName + "）") + "，请及时处理。";
+            notificationService.sendNotification(newAssigneeId, "TASK_ASSIGN", "新任务分配",
+                    content, "TASK", taskId);
+        } catch (Exception e) {
+            log.warn("发送任务分配通知失败: taskId={}", taskId, e);
+        }
     }
 
     private void validateStatusTransition(String oldStatus, String newStatus) {

@@ -6,10 +6,12 @@ import com.ltcmsystem.common.OperationTypeEnum;
 import com.ltcmsystem.dto.TeamMemberDTO;
 import com.ltcmsystem.entity.Team;
 import com.ltcmsystem.entity.TeamMember;
+import com.ltcmsystem.entity.TeamRole;
 import com.ltcmsystem.entity.TeamUserRole;
 import com.ltcmsystem.entity.User;
 import com.ltcmsystem.mapper.TeamMapper;
 import com.ltcmsystem.mapper.TeamMemberMapper;
+import com.ltcmsystem.mapper.TeamRoleMapper;
 import com.ltcmsystem.mapper.TeamUserRoleMapper;
 import com.ltcmsystem.mapper.UserMapper;
 import com.ltcmsystem.service.OperationLogService;
@@ -17,6 +19,8 @@ import com.ltcmsystem.service.TeamPermissionService;
 import com.ltcmsystem.service.TeamService;
 import com.ltcmsystem.util.IpUtil;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
@@ -29,10 +33,13 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements TeamService {
 
+    private static final Logger log = LoggerFactory.getLogger(TeamServiceImpl.class);
+
     private final TeamMemberMapper teamMemberMapper;
     private final UserMapper userMapper;
     private final TeamPermissionService teamPermissionService;
     private final TeamUserRoleMapper teamUserRoleMapper;
+    private final TeamRoleMapper teamRoleMapper;
     private final OperationLogService operationLogService;
 
     @Override
@@ -44,7 +51,14 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements Te
         if (teamIds.isEmpty()) {
             return List.of();
         }
-        return listByIds(teamIds);
+        List<Team> teams = listByIds(teamIds);
+        // 填充当前用户在每个团队的角色（前端用于区分"我管理的团队 / 我加入的团队"）
+        Map<Long, String> roleMap = members.stream()
+                .collect(Collectors.toMap(TeamMember::getTeamId, TeamMember::getRole, (a, b) -> a));
+        for (Team t : teams) {
+            t.setRole(roleMap.get(t.getId()));
+        }
+        return teams;
     }
 
     @Override
@@ -187,6 +201,90 @@ public class TeamServiceImpl extends ServiceImpl<TeamMapper, Team> implements Te
         // 物理删除（关系表不需要逻辑删除，避免唯一键冲突）
         teamMemberMapper.physicalDeleteByTeamIdAndUserId(teamId, memberId);
         teamUserRoleMapper.physicalDeleteByTeamIdAndUserId(teamId, memberId);
+    }
+
+    @Override
+    @Transactional
+    public void transferAdmin(Long teamId, Long newAdminId, Long currentUserId) {
+        Team team = getById(teamId);
+        if (team == null) {
+            throw new RuntimeException("团队不存在");
+        }
+        // 仅团队创建者可转让管理员
+        if (team.getCreatorId() == null || !team.getCreatorId().equals(currentUserId)) {
+            throw new RuntimeException("只有团队创建者可以转让管理员");
+        }
+        if (newAdminId == null || newAdminId.equals(currentUserId)) {
+            throw new RuntimeException("不能转让给自己");
+        }
+        // 新管理员必须是团队成员
+        TeamMember newAdminMember = teamMemberMapper.selectOne(
+                new LambdaQueryWrapper<TeamMember>()
+                        .eq(TeamMember::getTeamId, teamId)
+                        .eq(TeamMember::getUserId, newAdminId));
+        if (newAdminMember == null) {
+            throw new RuntimeException("对方不是团队成员，无法转让");
+        }
+        User newAdminUser = userMapper.selectById(newAdminId);
+
+        // 1. 更新团队创建者
+        team.setCreatorId(newAdminId);
+        updateById(team);
+
+        // 2. 原创建者降为普通成员
+        TeamMember oldCreatorMember = teamMemberMapper.selectOne(
+                new LambdaQueryWrapper<TeamMember>()
+                        .eq(TeamMember::getTeamId, teamId)
+                        .eq(TeamMember::getUserId, currentUserId));
+        if (oldCreatorMember != null) {
+            oldCreatorMember.setRole("MEMBER");
+            teamMemberMapper.updateById(oldCreatorMember);
+        }
+
+        // 3. 新管理员升为 ADMIN
+        newAdminMember.setRole("ADMIN");
+        teamMemberMapper.updateById(newAdminMember);
+
+        // 4. 同步 RBAC 角色关联（team_user_role → team_role 的 ADMIN/MEMBER）
+        syncTeamUserRole(teamId, currentUserId, "MEMBER");
+        syncTeamUserRole(teamId, newAdminId, "ADMIN");
+
+        // 5. 操作日志
+        if (newAdminUser != null) {
+            logOperation(currentUserId, OperationTypeEnum.TEAM_UPDATE,
+                    "转让管理员给: " + newAdminUser.getNickname() + "(" + newAdminUser.getUsername() + ")",
+                    teamId, team.getName());
+        }
+    }
+
+    /** 同步 team_user_role：把用户在团队中的角色关联更新为指定 role_code 对应的角色 */
+    private void syncTeamUserRole(Long teamId, Long userId, String roleCode) {
+        try {
+            TeamRole role = teamRoleMapper.selectOne(
+                    new LambdaQueryWrapper<TeamRole>()
+                            .eq(TeamRole::getTeamId, teamId)
+                            .eq(TeamRole::getRoleCode, roleCode));
+            if (role == null) {
+                return;
+            }
+            TeamUserRole exist = teamUserRoleMapper.selectOne(
+                    new LambdaQueryWrapper<TeamUserRole>()
+                            .eq(TeamUserRole::getTeamId, teamId)
+                            .eq(TeamUserRole::getUserId, userId));
+            if (exist != null) {
+                exist.setRoleId(role.getId());
+                teamUserRoleMapper.updateById(exist);
+            } else {
+                TeamUserRole tur = new TeamUserRole();
+                tur.setTeamId(teamId);
+                tur.setUserId(userId);
+                tur.setRoleId(role.getId());
+                teamUserRoleMapper.insert(tur);
+            }
+        } catch (Exception e) {
+            // 角色同步失败不影响主流程
+            log.warn("同步 team_user_role 失败: teamId={} userId={} role={}", teamId, userId, roleCode, e);
+        }
     }
 
     @Override

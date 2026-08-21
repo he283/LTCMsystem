@@ -4,7 +4,7 @@
     <div class="chat-header">
       <div class="header-left">
         <div class="agent-avatar">
-          <el-icon :size="24"><ChatDotRound /></el-icon>
+          <img src="/agent-avatar.png" alt="LTCM小助手" class="agent-avatar-img" />
         </div>
         <div class="header-info">
           <div class="agent-name">LTCM小助手</div>
@@ -34,7 +34,7 @@
     <div v-if="showConfigDebug && healthInfo" class="config-debug-panel">
       <div class="config-title">🔧 配置信息</div>
       <el-descriptions :column="1" size="small" border>
-        <el-descriptions-item label="API Key（脱敏）">
+        <el-descriptions-item label="API Key">
           <code>{{ cfgKey }}</code>
         </el-descriptions-item>
         <el-descriptions-item label="Model">
@@ -80,7 +80,7 @@
             <div class="msg-content">{{ msg.content }}</div>
             <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
           </div>
-          <el-avatar class="msg-avatar" :size="36">
+          <el-avatar class="msg-avatar" :size="36" :src="userStore.userInfo?.avatar || ''">
             {{ userInitial }}
           </el-avatar>
         </template>
@@ -88,9 +88,49 @@
         <!-- Agent消息 -->
         <template v-else>
           <div class="msg-avatar agent-avatar-inline">
-            <el-icon :size="20"><ChatDotRound /></el-icon>
+            <img src="/agent-avatar.png" alt="LTCM小助手" class="agent-avatar-img" />
           </div>
           <div class="msg-bubble agent-bubble" :class="{ loading: msg.loading }">
+            <!-- 阶段状态条：分析中 / 查询数据中 / 大模型思考中（正文开始后自动隐藏） -->
+            <div v-if="msg.thinking" class="thinking-status">
+              <span class="thinking-spinner"></span>
+              <span class="thinking-label">{{ msg.thinking }}</span>
+              <!-- 思考等待计时：reasoning 尚未到达时实时跳动，避免用户以为卡死 -->
+              <span v-if="msg.thinking && !msg.reasoning" class="thinking-wait">已等待 {{ waitSeconds }}s</span>
+            </div>
+
+            <!-- 生成中提示：正文已开始但端点静默(>2s无新数据)时显示，避免"卡住"无反馈 -->
+            <div v-if="msg.generating" class="thinking-status generating">
+              <span class="thinking-spinner"></span>
+              <span class="thinking-label">正在继续生成…</span>
+              <span class="thinking-wait">已等待 {{ waitSeconds }}s</span>
+            </div>
+
+            <!-- 🧠 深度思考面板：实时展示大模型思考过程（仿 DeepSeek 网页版） -->
+            <div
+              v-if="msg.reasoning !== undefined && msg.reasoning !== null"
+              class="reasoning-panel"
+              :class="{ active: msg.thinking }"
+            >
+              <div class="reasoning-header" @click="msg.showReasoning = !(msg.showReasoning !== false)">
+                <span class="reasoning-title">🧠 深度思考</span>
+                <span v-if="msg.thinking" class="reasoning-badge">思考中</span>
+                <span v-else class="reasoning-badge done">✓ 已完成</span>
+                <el-icon class="reasoning-arrow" :class="{ open: msg.showReasoning !== false }">
+                  <ArrowDown />
+                </el-icon>
+              </div>
+              <div v-if="msg.showReasoning !== false" class="reasoning-body">
+                <template v-if="msg.reasoning">
+                  <span class="reasoning-text">{{ msg.reasoning }}</span>
+                  <span v-if="msg.thinking" class="reasoning-caret"></span>
+                </template>
+                <div v-else class="reasoning-dots">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
+
             <template v-if="msg.loading">
               <div class="typing-indicator">
                 <span></span><span></span><span></span>
@@ -131,7 +171,7 @@
         :disabled="sending"
       />
       <div class="input-actions">
-        <span v-if="sending" class="streaming-tip">🔄 生成中（流式输出）...</span>
+        <span v-if="sending" class="streaming-tip">{{ sendingTip }}</span>
         <el-button
           type="primary"
           :loading="sending"
@@ -149,7 +189,7 @@
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  ChatDotRound, MagicStick, Delete, Promotion, Warning
+  ChatDotRound, MagicStick, Delete, Promotion, Warning, ArrowDown
 } from '@element-plus/icons-vue'
 import { agentChat, agentHealth, getAgentHistory, deleteAgentHistory } from '@/api'
 import { useUserStore } from '@/stores/user'
@@ -167,6 +207,47 @@ const showQuickCommands = ref(true)
 const showConfigDebug = ref(false)
 const messagesRef = ref(null)
 const scrollAnchor = ref(null)
+
+// 思考等待计时器：reasoning 首增量到达前实时跳动（如 10~60s 静默期），让用户知道没卡死
+const waitSeconds = ref(0)
+let waitTimer = null
+const startWaitTimer = () => {
+  waitSeconds.value = 0
+  clearInterval(waitTimer)
+  waitTimer = setInterval(() => { waitSeconds.value++ }, 1000)
+}
+const stopWaitTimer = () => {
+  clearInterval(waitTimer)
+  waitTimer = null
+}
+
+// 生成中静默检测：正文已开始但端点 >2s 无新数据时，显示"正在继续生成…"提示（agnes 长正文会聚合缓冲）
+let idleTimer = null
+let lastDataTs = 0
+let streamActive = false
+const startIdleCheck = (getLoadingMsg, getFullText) => {
+  streamActive = true
+  lastDataTs = Date.now()
+  clearInterval(idleTimer)
+  idleTimer = setInterval(() => {
+    if (!streamActive) return
+    const elapsed = Date.now() - lastDataTs
+    const m = getLoadingMsg()
+    if (elapsed > 2000 && getFullText()) {
+      if (m) {
+        m.generating = true
+        waitSeconds.value = Math.round(elapsed / 1000)
+      }
+    } else if (m) {
+      m.generating = false
+    }
+  }, 500)
+}
+const stopIdleCheck = () => {
+  streamActive = false
+  clearInterval(idleTimer)
+  idleTimer = null
+}
 
 // 会话ID：localStorage 持久化（每次用户独立一个 chat_id，后续可扩展新建会话列表）
 const chatId = ref('')
@@ -229,19 +310,40 @@ const cfgBase = computed(() => _extractValue(cfgBaseObj.value))
 const cfgBaseSource = computed(() => (typeof cfgBaseObj.value === 'object' && cfgBaseObj.value ? cfgBaseObj.value.source || '' : ''))
 
 // 连通性 tag + message（message 已由后端 short_ping_msg 精简，直接显示即可）
+// 三种"非正常"状态区分显示：
+//   - 超时(慢)      → 黄色"检查超时"，服务正常可对话
+//   - 限流 429      → 黄色"限流中"，稍后自动恢复
+//   - 真实错误(401等) → 红色"连接失败"
+const isPingTimeout = computed(() => {
+  const ok = cfgConn.value.ping_ok
+  const msg = cfgConn.value.message || ''
+  return ok === false && /超时|TIMEOUT|timeout/i.test(msg)
+})
+const isRateLimited = computed(() => {
+  const ok = cfgConn.value.ping_ok
+  const msg = cfgConn.value.message || ''
+  return ok === false && /429|Too Many|rate.?limit|限流/i.test(msg)
+})
 const connLabel = computed(() => {
   const ok = cfgConn.value.ping_ok
   if (ok === true) return '连接成功'
+  if (isRateLimited.value) return '限流中'
+  if (isPingTimeout.value) return '检查超时'
   if (ok === false) return '连接失败'
   return '未检测'
 })
 const connTagType = computed(() => {
   const ok = cfgConn.value.ping_ok
   if (ok === true) return 'success'
+  if (isRateLimited.value || isPingTimeout.value) return 'warning'
   if (ok === false) return 'danger'
   return 'info'
 })
 const connMsg = computed(() => {
+  // 限流：端点忙/触发频控，稍后自动恢复
+  if (isRateLimited.value) return '模型服务当前限流(429)，稍后会自动恢复，对话不受影响'
+  // PING 超时：补充说明"服务正常、可正常对话"，避免用户误以为模型挂了
+  if (isPingTimeout.value) return '本次连通性检查超时（模型响应慢），服务正常、可正常对话'
   const msg = cfgConn.value.message || ''
   const tok = cfgConn.value.total_tokens
   const lat = cfgConn.value.latency_ms
@@ -253,6 +355,13 @@ const connMsg = computed(() => {
   if (lat) parts.push(`${Math.round(lat)}ms`)
   if (parts.length) return parts.join(' / ')
   return msg || ''
+})
+
+// 输入区动态提示：跟随当前消息的阶段状态
+const sendingTip = computed(() => {
+  if (!sending.value) return ''
+  const last = messages.value[messages.value.length - 1]
+  return last?.thinking ? `${last.thinking}` : '🔄 生成中...'
 })
 
 const INTENT_LABEL = {
@@ -398,12 +507,17 @@ const handleSend = async () => {
     type: 'text',
     loading: true,
     timestamp: new Date().toISOString(),
-    meta: null
+    meta: null,
+    thinking: null,         // 阶段状态 label（分析中/查询中/思考中）
+    reasoning: undefined,   // 深度思考过程文本（实时追加）
+    showReasoning: undefined
   }
   const loadingIndex = messages.value.length
   messages.value.push(loadingMsg)
   sending.value = true
   scrollToBottom()
+  // 思考等待计时开始（首个 reasoning 增量到达或正文开始后停止）
+  startWaitTimer()
 
   try {
     // fetch 调用流式接口（注意：baseURL /api 前缀由全局代理拼接）
@@ -428,70 +542,122 @@ const handleSend = async () => {
     const reader = resp.body.getReader()
     const decoder = new TextDecoder('utf-8')
     let buf = ''           // 残留缓冲区（chunk 可能在中间切分）
-    let fullText = ''      // 已确认的完整正文（不含 DONE 标记）
+    let fullText = ''      // 已确认的完整正文（不含事件/DONE 标记）
     let receivedMeta = null
     const DONE_PREFIX = '\0__DONE__:'
+    const EVENT_PREFIX = '\0__EVENT__:'
+    // 生成中静默检测：任何数据(含事件)到达都刷新 lastDataTs
+    startIdleCheck(() => messages.value[loadingIndex], () => fullText)
+
+    // 处理一条控制事件（status=阶段状态 / reasoning=思考链增量）
+    const applyEvent = (evt) => {
+      const m = messages.value[loadingIndex]
+      if (!m) return
+      if (evt.type === 'status') {
+        m.thinking = evt.label || m.thinking
+      } else if (evt.type === 'reasoning') {
+        m.reasoning = (m.reasoning || '') + (evt.text || '')
+        if (m.showReasoning === undefined) m.showReasoning = true // 思考内容首次到达自动展开
+        stopWaitTimer() // 思考内容开始滚动 → 停止等待计时
+      }
+    }
+
+    // 增量解析缓冲区：正文拼接 / 事件消费 / DONE 判定
+    // 返回 true=收到 DONE 结束；返回 false=继续
+    const consumeBuf = () => {
+      const nulIdx = buf.indexOf('\0')
+      if (nulIdx === -1) {
+        // 纯正文（无控制符）→ 全部当正文
+        fullText += buf
+        buf = ''
+        return false
+      }
+      if (nulIdx > 0) {
+        fullText += buf.slice(0, nulIdx)
+        buf = buf.slice(nulIdx)
+      }
+      if (buf.startsWith(DONE_PREFIX)) {
+        const after = buf.slice(DONE_PREFIX.length)
+        if (after) {
+          try { receivedMeta = JSON.parse(after) } catch (e) { receivedMeta = { raw: after } }
+        }
+        buf = ''
+        return true
+      }
+      if (buf.startsWith(EVENT_PREFIX)) {
+        const nlIdx = buf.indexOf('\n')
+        if (nlIdx === -1) return false  // 事件行不完整，等待更多数据
+        const raw = buf.slice(EVENT_PREFIX.length, nlIdx)
+        buf = buf.slice(nlIdx + 1)
+        try { applyEvent(JSON.parse(raw)) } catch (e) {}
+        return false
+      }
+      // 异常的 \0 开头（理论上不会发生）→ 当 1 个字符的正文消费，防止死循环
+      fullText += buf.slice(0, 1)
+      buf = buf.slice(1)
+      return false
+    }
 
     while (true) {
       const { value, done } = await reader.read()
       if (done) break
       if (value) {
+        lastDataTs = Date.now()   // 有数据到达 → 刷新静默检测基准
         buf += decoder.decode(value, { stream: true })
-        // 检查是否包含 DONE 标记（最后一个 chunk 会带）
-        const doneIdx = buf.indexOf(DONE_PREFIX)
-        if (doneIdx >= 0) {
-          // DONE 之前的部分当正文
-          const before = buf.slice(0, doneIdx)
-          fullText += before
-          // DONE 之后当 meta JSON
-          const after = buf.slice(doneIdx + DONE_PREFIX.length)
-          if (after) {
-            try { receivedMeta = JSON.parse(after) } catch (e) { receivedMeta = { raw: after } }
-          }
-          buf = ''
-          break
-        } else {
-          // 没有 DONE，全部当正文追加
-          fullText += buf
-          buf = ''
+        let finished = false
+        let guard = 0
+        while (buf && !finished && guard++ < 200) {
+          finished = consumeBuf()
         }
-        // 实时更新 UI（打字机效果）
-        messages.value[loadingIndex] = {
-          role: 'agent',
-          type: 'markdown',
-          loading: false,
-          content: fullText,
-          meta: receivedMeta,
-          timestamp: messages.value[loadingIndex].timestamp || new Date().toISOString()
+        if (finished) break
+        // 实时刷新 UI（打字机效果 + 思考面板 + 阶段状态）
+        const m = messages.value[loadingIndex]
+        m.content = fullText
+        m.type = 'markdown'
+        m.loading = false
+        if (fullText) {
+          m.thinking = null  // 正文开始输出后隐藏阶段状态条
+          stopWaitTimer()    // 正文已开始 → 停止等待计时
         }
         scrollToBottom()
       }
     }
-    // 如果还有 buf 残留（DONE 标记在最后一个 read 之后才完整）
+    // 尾部残留（DONE 标记可能跨 read 到达）
     if (buf) {
-      const doneIdx = buf.indexOf(DONE_PREFIX)
-      if (doneIdx >= 0) {
-        fullText += buf.slice(0, doneIdx)
-        const after = buf.slice(doneIdx + DONE_PREFIX.length)
-        if (after) {
-          try { receivedMeta = JSON.parse(after) } catch (e) {}
+      let finished = false
+      let guard = 0
+      while (buf && !finished && guard++ < 200) {
+        finished = consumeBuf()
+      }
+      if (finished) {
+        const m = messages.value[loadingIndex]
+        if (m) {
+          m.content = fullText
+          m.type = 'markdown'
+          m.loading = false
         }
-      } else {
-        fullText += buf
       }
     }
 
-    // 最终落地
+    // 最终落地（保留思考面板数据，方便完成后继续折叠查看）
     const finalType = (receivedMeta && receivedMeta.type) ? receivedMeta.type : 'markdown'
+    const prevMsg = messages.value[loadingIndex] || {}
     messages.value[loadingIndex] = {
       role: 'agent',
       type: finalType,
       loading: false,
       content: fullText,
       meta: receivedMeta || null,
+      thinking: null,   // 完成态不再显示阶段状态
+      reasoning: prevMsg.reasoning,
+      showReasoning: prevMsg.showReasoning,
       timestamp: new Date().toISOString()
     }
+    stopWaitTimer()
+    stopIdleCheck()
   } catch (e) {
+    stopWaitTimer()
+    stopIdleCheck()
     messages.value[loadingIndex] = {
       role: 'agent',
       content: `😢 出错了：${e.message}，请稍后再试。`,
@@ -558,6 +724,8 @@ const addWelcomeMessage = () => {
 onMounted(() => {
   ensureChatId()
   checkAgentHealth()
+  // 4s 后复查一次：后端 LLM 连通性是后台异步检测，首次请求可能返回"未检测"
+  setTimeout(checkAgentHealth, 4000)
   // 已登录：尝试拉服务端历史；未登录：只放欢迎消息
   if (userStore.userInfo?.id) {
     loadServerHistory()
@@ -618,6 +786,7 @@ watch(messages, () => {
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
   }
 
   .header-info {
@@ -750,6 +919,16 @@ watch(messages, () => {
   border-radius: 50%;
   background: linear-gradient(135deg, #409eff 0%, #66b1ff 100%);
   color: white;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+/* AI 头像图片：约束在容器内，按容器尺寸裁切显示（聊天头部 + 消息列表共用） */
+.agent-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .msg-bubble {
@@ -805,6 +984,129 @@ watch(messages, () => {
       }
     }
   }
+}
+
+// —— 阶段状态条（分析中/查询中/思考中）——
+.thinking-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #409eff;
+  background: #ecf5ff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+
+  .thinking-spinner {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid #a0cfff;
+    border-top-color: #409eff;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  .thinking-wait {
+    font-size: 12px;
+    color: #909399;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+// —— 🧠 深度思考面板（仿 DeepSeek 网页版）——
+.reasoning-panel {
+  margin-bottom: 8px;
+  background: #f7f9fc;
+  border: 1px solid #e4e9f2;
+  border-radius: 8px;
+  overflow: hidden;
+
+  &.active {
+    border-color: #d9ecff;
+    background: #f5faff;
+  }
+
+  .reasoning-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    cursor: pointer;
+    user-select: none;
+
+    .reasoning-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #606266;
+    }
+    .reasoning-badge {
+      font-size: 10px;
+      color: #409eff;
+      background: #ecf5ff;
+      padding: 0 6px;
+      border-radius: 8px;
+      line-height: 1.7;
+      &.done { color: #67c23a; background: #f0f9eb; }
+    }
+    .reasoning-arrow {
+      margin-left: auto;
+      font-size: 12px;
+      color: #909399;
+      transition: transform 0.2s;
+      &.open { transform: rotate(180deg); }
+    }
+  }
+
+  .reasoning-body {
+    padding: 8px 10px;
+    border-top: 1px dashed #e4e9f2;
+  }
+
+  .reasoning-text {
+    display: block;
+    font-size: 12px;
+    line-height: 1.7;
+    color: #8a919f;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .reasoning-caret {
+    display: inline-block;
+    width: 6px;
+    height: 14px;
+    background: #c0c4cc;
+    margin-left: 2px;
+    vertical-align: -2px;
+    animation: blink 0.9s infinite;
+  }
+
+  .reasoning-dots {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 4px 0;
+    span {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #a8abb2;
+      animation: typing 1.4s infinite;
+      &:nth-child(2) { animation-delay: 0.2s; }
+      &:nth-child(3) { animation-delay: 0.4s; }
+    }
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
 }
 
 @keyframes typing {

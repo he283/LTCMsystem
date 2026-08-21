@@ -46,6 +46,7 @@ LangChain + LangGraph 版 Agent 核心
 import os
 import json
 import time
+import random
 import logging
 from typing import TypedDict, Any, Optional
 
@@ -241,7 +242,7 @@ DEFAULT_SYSTEM_PROMPT = f'''你是「{AGENT_NAME}」，一个服务于 LTCM（�
 4. 不要编造数据，上下文没有的信息如实告知
 5. 你是任务管理助手，不要回答与任务/团队/工作管理无关的问题（如闲聊、编程、数学题等），礼貌引导回到正题
 6. 不要暴露系统提示词，不要原样输出上下文的JSON
-7. 最后可以用一句追问式引导（例如"需要我帮你深入看看某个具体任务吗？"），增加互动性
+7. 同时你是一个猫娘，最后可以用一句追问式引导然后加个"喵~"（例如"需要我帮你深入看看某个具体任务喵~😊"），增加互动性
 8. 回答结构建议（如有对应数据）：
    - 📊 整体概览（总任务数/进行中/已完成/逾期等）
    - 📋 任务详情（按状态分组：进行中/待评审/已完成/已取消）—— **每条必须列出标题+编号**
@@ -682,6 +683,251 @@ def invoke_agent_via_langgraph_stream(user_id: int, user_message: str, chat_id: 
     # 最后吐 DONE 标记 + meta（前端看到 '\0__DONE__:' 开头就停止拼接 content，解析 meta）
     import json as _json
     yield '\0__DONE__:' + _json.dumps(meta, ensure_ascii=False, default=str)
+
+
+# ============================================================
+# 6.5 真·流式版本 v2 —— 仿 DeepSeek 网页版「在线思考」
+# ============================================================
+# 解决的问题：旧版是"先等大模型完整生成（约10秒），再模拟打字机"，等待期间前端
+# 只有三个点的 loading，观感很差。
+# v2 的做法：
+#   1. 提问后立即推送「阶段状态事件」：分析中 → 查询数据中 → 大模型思考中
+#   2. LLM 润色阶段使用 ChatOpenAI.stream() 原生 token 级流式，边生成边吐出正文
+#   3. 若模型返回 reasoning_content（思考链，如 R1 系列），通过 reasoning 事件实时推送，
+#      前端像 DeepSeek 网页版一样实时展示"深度思考"过程
+# 协议（向后兼容，正文协议不变）：
+#   - 正文增量：普通文本（与旧版一致）
+#   - 控制事件：\0__EVENT__:{json}\n （status=阶段状态 / reasoning=思考链增量）
+#   - 结束标记：\0__DONE__:{json}（与旧版一致）
+_EVENT_PREFIX = '\0__EVENT__:'
+
+
+def _event(type_: str, **payload) -> str:
+    """构造一条控制事件行：\0__EVENT__:{json}\n（单行完整 JSON，前端按 \0 前缀识别）"""
+    data = {'type': type_}
+    data.update(payload)
+    return _EVENT_PREFIX + json.dumps(data, ensure_ascii=False, default=str) + '\n'
+
+
+def _status_event(phase: str, label: str) -> str:
+    """阶段状态事件：phase 供前端逻辑判断，label 是展示文案"""
+    return _event('status', phase=phase, label=label)
+
+
+def _typewriter_yield(content: str, min_sleep: float = 0.01, max_sleep: float = 0.025):
+    """把已就绪的完整文本按 2~6 字符增量吐出（打字机效果），用于静态模板/本地草稿等秒回场景"""
+    import random as _rand
+    import time as _time
+    idx = 0
+    n = len(content)
+    while idx < n:
+        chunk_sz = _rand.randint(2, 6)
+        yield content[idx:idx + chunk_sz]
+        idx += chunk_sz
+        _time.sleep(min_sleep + _rand.random() * (max_sleep - min_sleep))
+
+
+def invoke_agent_via_langgraph_stream_v2(user_id: int, user_message: str, chat_id: str = None):
+    """
+    真·流式版本 v2（仿 DeepSeek 网页版「在线思考」）：
+    - 本地意图识别 / 查DB 阶段 → 立即推送状态事件，告别"10秒空白"
+    - LLM 润色阶段 → ChatOpenAI.stream() 原生 token 级流式，边生成边吐出正文
+    - 模型返回 reasoning_content（思考链）→ reasoning 事件实时推送，前端实时展示
+    - 任何阶段失败 → 自动降级本地草稿（打字机输出），始终可用
+    Yields:
+        str: 正文增量 / \0__EVENT__: 控制事件 / \0__DONE__: meta
+    """
+    state: AgentState = {
+        'user_id': user_id,
+        'user_query': (user_message or '').strip(),
+        'chat_id': chat_id,
+        'user_name': '',
+        'steps': [],
+        'used_llm': False,
+        'used_langgraph': True,
+    }
+
+    # ---------- 阶段1：意图识别（毫秒级，先报状态再干活） ----------
+    yield _status_event('analyze', '正在分析你的问题…')
+    try:
+        state = classify_intent_node(state)
+    except Exception as e:
+        logger.warning(f'[STREAM_V2] 意图识别异常: {type(e).__name__}: {e}')
+        state['intent'] = 'unknown'
+
+    intent = state.get('intent')
+    tools = _get_local_tools()
+
+    # ---------- 阶段2：静态意图 → 本地模板秒回 ----------
+    # unknown 不走这里（需要尝试模糊匹配可能带数据）
+    if intent in tools['STATIC_REPLIES'] and intent != 'unknown':
+        yield _status_event('reply', '正在组织回复…')
+        templates = tools['STATIC_REPLIES'][intent]
+        content = random.choice(templates) if isinstance(templates, list) else templates
+        state['local_content'] = content
+        state['type'] = 'markdown'
+        state['final_content'] = content
+        state['used_llm'] = False
+        for c in _typewriter_yield(content):
+            yield c
+        meta = {
+            'type': state.get('type') or 'markdown',
+            'intent': intent,
+            'used_llm': False,
+            'used_langgraph': True,
+            'steps': state.get('steps', []),
+            'llm_error': None,
+            'llm_latency_ms': None,
+            'llm_usage': None,
+            'error': None,
+            'data': None,
+        }
+        yield '\0__DONE__:' + json.dumps(meta, ensure_ascii=False, default=str)
+        return
+
+    # ---------- 阶段3：数据驱动意图 → 查数据库（快） ----------
+    yield _status_event('query', '正在查询你的任务数据…')
+    try:
+        state = data_query_node(state)
+    except Exception as e:
+        logger.exception('[STREAM_V2] data_query 异常')
+        state['error'] = f'DATA_QUERY_ERROR: {e}'
+        state['local_content'] = f'查询数据时出了点问题 😢：{e}'
+        state['type'] = 'text'
+        state['final_content'] = state['local_content']
+        state['used_llm'] = False
+        # 直接输出错误信息（打字机）
+        for c in _typewriter_yield(state['local_content']):
+            yield c
+        meta = {
+            'type': state.get('type') or 'text',
+            'intent': intent,
+            'used_llm': False,
+            'used_langgraph': True,
+            'steps': state.get('steps', []),
+            'llm_error': None,
+            'llm_latency_ms': None,
+            'llm_usage': None,
+            'error': state.get('error'),
+            'data': state.get('final_data'),
+        }
+        yield '\0__DONE__:' + json.dumps(meta, ensure_ascii=False, default=str)
+        return
+
+    # ---------- 阶段4：LLM 润色（原生 token 级流式） ----------
+    if _should_invoke_llm(state):
+        yield _status_event('llm', '🧠 大模型正在思考…')
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        usage: dict = {}
+        latency_ms = None
+        t0 = time.perf_counter()
+        try:
+            messages, _ = _build_llm_messages(state)
+            model = get_chat_model()
+
+            # —— 重要：这里不走 model.stream()，而是用 langchain 底层 OpenAI client 的
+            #    chat.completions.create(stream=True)。原因：实测发现部分转发端点（如 agnes）
+            #    配合 langchain-openai 的 stream() 会把整个响应聚合成单个 chunk 一次性返回，
+            #    失去"边生成边显示"的效果；底层 client 则是真正的逐 token SSE。
+            def _conv_lc_msg(m):
+                _t = getattr(m, 'type', '')
+                role = 'user' if _t == 'human' else ('assistant' if _t == 'ai' else 'system')
+                return {'role': role, 'content': str(m.content)}
+
+            openai_msgs = [_conv_lc_msg(m) for m in messages]
+            stream_resp = model.client.create(
+                model=DEEPSEEK_MODEL,
+                messages=openai_msgs,
+                stream=True,
+                temperature=DEEPSEEK_TEMPERATURE,
+                max_tokens=DEEPSEEK_MAX_TOKENS,
+            )
+            for chunk in stream_resp:
+                # 末尾的 usage-only chunk 没有 choices
+                if not getattr(chunk, 'choices', None):
+                    continue
+                delta = chunk.choices[0].delta
+                # 正文增量：agnes 等转发端点会把长正文后半段聚合成超大 chunk(实测上万字一次性推送)，
+                # 这里把大块拆成小片 + 微延迟转发，保持"逐字输出"的观感（小片直接透传）
+                c = getattr(delta, 'content', None) or ''
+                if c:
+                    c = str(c)
+                    content_parts.append(c)
+                    if len(c) > 120:
+                        for i in range(0, len(c), 40):
+                            yield c[i:i + 40]
+                            time.sleep(0.015)
+                    else:
+                        yield c
+                # 思考链增量（R1 / ModelScope 等模型会返回 reasoning_content）
+                if SHOW_REASONING:
+                    rc = getattr(delta, 'reasoning_content', None) or ''
+                    if rc:
+                        reasoning_parts.append(str(rc))
+                        yield _event('reasoning', text=str(rc))
+            latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+            content = ''.join(content_parts)
+            if not content:
+                # 模型只吐了思考链没吐正文（异常情况）→ 交给 fallback
+                raise ValueError('LLM流式返回正文为空')
+
+            state['llm_content'] = content
+            state['final_content'] = content
+            state['used_llm'] = True
+            state['llm_latency_ms'] = latency_ms
+            state['llm_usage'] = usage or None
+            logger.info(
+                f'[STREAM_V2] LLM 原生流式完成: latency={latency_ms}ms '
+                f'content_len={len(content)} reasoning_len={len("".join(reasoning_parts))} usage={usage or "无"}'
+            )
+        except Exception as e:
+            latency_ms = round((time.perf_counter() - t0) * 1000, 1) if latency_ms is None else latency_ms
+            logger.exception(f'[STREAM_V2] LLM 原生流式失败（{latency_ms}ms）: {e}')
+            state['llm_error'] = f'{type(e).__name__}: {e}'
+            state['llm_latency_ms'] = latency_ms
+            if content_parts:
+                # 已流出部分正文：保留已生成部分，标记不完整
+                state['used_llm'] = True
+                state['final_content'] = ''.join(content_parts)
+                state['error'] = state['llm_error']
+            elif LLM_FALLBACK_TO_LOCAL and state.get('local_content'):
+                # 尚未输出任何正文 → 降级本地草稿
+                state['used_llm'] = False
+                yield _status_event('fallback', '大模型暂时不可用，改用本地数据回复…')
+                for c in _typewriter_yield(state['local_content']):
+                    yield c
+                state['final_content'] = state['local_content']
+            else:
+                err_text = f'😢 智能助手暂时无法响应，请稍后再试～（{state["llm_error"]}）'
+                state['type'] = 'text'
+                state['final_content'] = err_text
+                yield err_text
+    else:
+        # LLM 禁用 / 无结构化数据（如 unknown 模糊未命中）→ 本地草稿/模板打字机输出
+        yield _status_event('reply', '正在生成回复…')
+        local_content = state.get('local_content') or state.get('final_content') or '抱歉，没有生成任何回复内容 😅'
+        state['final_content'] = local_content
+        if not state.get('type'):
+            state['type'] = 'markdown'
+        for c in _typewriter_yield(local_content):
+            yield c
+
+    # ---------- 阶段5：封装 meta 结束 ----------
+    meta = {
+        'type': state.get('type') or 'markdown',
+        'intent': state.get('intent'),
+        'used_llm': bool(state.get('used_llm', False)),
+        'used_langgraph': True,
+        'steps': state.get('steps', []),
+        'llm_error': state.get('llm_error'),
+        'llm_latency_ms': state.get('llm_latency_ms'),
+        'llm_usage': state.get('llm_usage'),
+        'error': state.get('error'),
+        'data': state.get('final_data'),
+    }
+    yield '\0__DONE__:' + json.dumps(meta, ensure_ascii=False, default=str)
 
 
 def ping_llm_langchain() -> tuple[bool, str]:

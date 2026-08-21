@@ -5,7 +5,7 @@
 ## 技术栈
 
 ### 后端
-- Spring Boot 3.2.0
+- Spring Boot 3.1.5
 - MyBatis Plus 3.5.5
 - MySQL 8.0
 - Spring Security + JWT
@@ -23,8 +23,8 @@
 - Flask 3.0（API 服务，端口 5001）
 - LangChain 1.3+（统一大模型抽象）
 - LangGraph 1.2+（对话状态机工作流编排）
-- LangChain-OpenAI（通过 OpenAI 兼容端点对接 DeepSeek）
-- DeepSeek API（模型：deepseek-v4-flash）
+- LangChain-OpenAI（通过 OpenAI 兼容端点对接大模型）
+- agnes-ai API（多供应商预设，默认模型：agnes-2.5-flash，可在 config.py 的 MODEL_PROVIDER 切换）
 - PyMySQL（直连 MySQL 查询结构化数据）
 - 指定虚拟环境：`D:\Code\python\AI\.venv`
 
@@ -62,7 +62,7 @@ LTCMsystem/
 │   └── vite.config.js
 ├── agent/                   # Python Agent 助手（Flask + LangChain + LangGraph，端口 5001）
 │   ├── app.py               # Flask 入口（/agent/chat, /agent/chat/stream, /agent/history, /agent/health）
-│   ├── config.py            # 配置：DB、DeepSeek API Key（带_env/默认值来源追踪）、LangChain、流式/历史/.venv路径
+│   ├── config.py            # 配置：DB、大模型 API Key（MODEL_PROVIDER 多供应商，带_env/默认值来源追踪）、LangChain、流式/历史/.venv路径
 │   ├── requirements.txt     # Python 依赖
 │   ├── start.bat            # Windows 启动脚本
 │   ├── test_langgraph.py    # LangChain/LangGraph 集成测试
@@ -118,7 +118,7 @@ cd backend
 mvn spring-boot:run
 ```
 
-后端将在 http://localhost:8080 启动
+后端将在 http://localhost:8081 启动
 
 ### 3. 运行前端
 
@@ -153,18 +153,23 @@ Agent 服务将在 http://localhost:5001 启动
 
 ## 默认账号
 
-系统预置了三个测试账号，密码均为 `123456`：
+系统预置的测试账号，密码均为 `123456`：
 
-- admin / 123456 (管理员)
+- admin / 123456 (管理员，全局管理权限)
 - user1 / 123456 (张三)
 - user2 / 123456 (李四)
+- huang / 123456
+- xiaofang / 123456
+- wanwan / 123456
+- xiaotiantian / 123456
 
 ## 功能特性
 
 ### 用户功能
 - 用户注册/登录
 - JWT令牌认证
-- 用户信息管理
+- 用户信息管理（昵称/邮箱修改）
+- **头像上传**（个人中心上传，支持 jpg/png/gif/webp ≤2MB，右上角/聊天窗口即时生效）
 
 ### 任务管理
 - 任务创建/编辑/删除
@@ -182,7 +187,9 @@ Agent 服务将在 http://localhost:5001 启动
 - 团队唯一编号（team_code）
 - 通过团队编号申请加入（需管理员审批）
 - 退出团队申请（需管理员审批）
-- 团队审批管理（通过/拒绝）
+- 团队审批管理（待审批 / **审批记录**两个页签，展示处理人、处理时间、处理备注）
+- **转让团队管理员**（仅创建者可转让，创建者降为普通成员，RBAC 角色同步）
+- **团队卡片区分「我管理的团队 / 我加入的团队」**（不同颜色标签）
 - 团队任务协作
 - 团队创建人显示昵称
 - 团队RBAC权限体系
@@ -202,7 +209,7 @@ Agent 服务将在 http://localhost:5001 启动
 - 无需登录即可浏览
 
 ### 消息通知
-- 系统通知、任务通知、团队申请通知、审批结果通知
+- 系统通知、任务通知、**任务分配通知（TASK_ASSIGN，分配/转派任务时提醒新负责人）**、团队申请通知、审批结果通知
 - 顶部导航栏通知铃铛
 - 未读数量角标提醒
 - 标记已读/全部已读
@@ -215,7 +222,7 @@ Agent 服务将在 http://localhost:5001 启动
 - 记录IP地址和User-Agent
 - 管理员可见
 
-### AI 智能助手（Python Agent + LangChain + LangGraph + DeepSeek）
+### AI 智能助手（Python Agent + LangChain + LangGraph + 大模型）
 - **自然语言对话**：直接用中文提问，侧边栏「AI助手」聊天窗口交互
 - **任务分析报告**：任务总数、状态统计、逾期提醒、高优先级清单、个性化建议
   - ✅ **强制列出任务细节**（修复"只给4个没标题"痛点）：每个状态下的任务都逐条显示「标题 + 编号 T-xxx + 完成/截止时间 + 所属团队」，不会再只说"已完成4个"这种统计数字
@@ -224,13 +231,15 @@ Agent 服务将在 http://localhost:5001 启动
 - **高优先级任务**：汇总高优先级+逾期任务，建议精力充沛时段处理
 - **团队信息概览**：所在团队、团队编号、我的角色、创建人、最新未读通知
 - **未读通知查询**：最新未读通知列表（前10条）
-- **流式输出（打字机效果）**：默认走 `/agent/chat/stream`，Flask `stream_with_context` 按 2~6 字符增量吐出，前端 `fetch + ReadableStream` 实时渲染；最后以 `\0__DONE__:JSON_meta` 携带 token 用量/耗时等元信息
+- **流式输出（仿 DeepSeek 网页版「在线思考」）**：默认走 `/agent/chat/stream`，Flask `stream_with_context` + 前端 `fetch + ReadableStream` 实时渲染；提问后**立即**反馈阶段状态（分析中→查询中→大模型思考中），思考链（reasoning_content）实时渲染「🧠 深度思考」面板，正文为 LLM 原生 token 级流式逐字输出（`LLM_NATIVE_STREAM=False` 可切回旧版"完整生成后打字机"）；最后以 `\0__DONE__:JSON_meta` 携带 token 用量/耗时等元信息
+  - **长回复平滑输出**：针对 agnes 等端点会把长正文后半段聚合成巨型 chunk 一次性推送的问题，后端自动把大块拆成小片（40字/片 + 微延迟）转发，保持"逐字输出"观感；思考等待期前端显示「已等待 Ns」实时计时，正文静默期显示「正在继续生成…」提示，杜绝"卡住后一波全出"和误以为卡死
+  - **LLM 连通性检测不阻塞**：`/agent/health` 的连通性 ping 改为后台线程 + 30s 缓存，health 接口毫秒级返回（前端永不超时）；连通性标签三态区分：限流(429)→黄色「限流中」、超时→黄色「检查超时」、真实错误→红色「连接失败」
 - **聊天历史记录（刷新页面不丢）**：
   - 按 `chat_id + user_id` 隔离，前端 `chat_id` 存在 localStorage；
   - 服务端 LRU+TTL 内存缓存（默认保留 100 条消息 / 4 小时，可配置）；
   - 接口：`GET / DELETE /agent/history/<chat_id>?user_id=uid`；
-  - 多轮上下文：LangGraph `classify_intent` 节点会把最近 `CONTEXT_WINDOW_SIZE`（默认 6 轮）带入 DeepSeek，让 AI 记得之前聊过什么
-- **混合架构**：本地关键词匹配 → MySQL 结构化查询 → DeepSeek(deepseek-v4-flash) 自然语言润色
+  - 多轮上下文：LangGraph `classify_intent` 节点会把最近 `CONTEXT_WINDOW_SIZE`（默认 6 轮）带入大模型，让 AI 记得之前聊过什么
+- **混合架构**：本地关键词匹配 → MySQL 结构化查询 → 大模型(默认 agnes-2.5-flash，可在 `MODEL_PROVIDER` 切换) 自然语言润色
 - **LangGraph 工作流**：意图分类 → 静态回复/数据查询 → LLM润色 → 结果封装，节点链路可追溯；流式版本在 agent 内部实现 2~6 字符打字机增量
 - **自动降级**：LangGraph 不可用 → 回退纯函数；LLM 不可用 → 回退本地草稿；始终保证可用
 - **Token 节省**：静态意图（问候/帮助/感谢/身份）不调用LLM，仅数据驱动意图调用润色
@@ -249,23 +258,33 @@ Agent 服务将在 http://localhost:5001 启动
 
 ### 用户接口
 - `GET /api/user/info` - 获取当前用户信息
+- `PUT /api/user/info` - 修改昵称/邮箱
+- `PUT /api/user/password` - 修改密码
+- `POST /api/user/avatar` - 上传头像（multipart，字段名 file，返回头像URL）
 
 ### 任务接口
 - `GET /api/tasks/my` - 获取我的任务
 - `GET /api/tasks/team/{teamId}` - 获取团队任务
-- `POST /api/tasks` - 创建任务
-- `PUT /api/tasks/{id}` - 更新任务
+- `POST /api/tasks` - 创建任务（有负责人时自动发任务分配通知）
+- `PUT /api/tasks/{id}` - 更新任务（负责人变更时通知新负责人）
 - `DELETE /api/tasks/{id}` - 删除任务
 - `PUT /api/tasks/{id}/public` - 切换任务公开状态
 - `GET /api/tasks/{id}/change-logs` - 获取任务变更历史
 
 ### 团队接口
-- `GET /api/teams/my` - 获取我的团队
+- `GET /api/teams/my` - 获取我的团队（含当前用户角色 role，用于区分管理/加入）
 - `POST /api/teams` - 创建团队
-- `POST /teams/apply` - 申请加入团队（通过团队编号）
-- `POST /teams/leave-apply` - 申请退出团队
-- `GET /teams/applications` - 获取团队申请列表（管理员）
-- `PUT /teams/applications/{id}/handle` - 审批申请（管理员）
+- `POST /api/teams/apply` - 申请加入团队（通过团队编号）
+- `POST /api/teams/leave-apply` - 申请退出团队
+- `GET /api/teams/applications` - 获取团队申请列表（管理员，支持按 status 过滤）
+- `PUT /api/teams/applications/{id}/handle` - 审批申请（管理员，记录处理人与备注）
+- `GET /api/teams/{teamId}/members` - 获取团队成员列表
+- `POST /api/teams/{teamId}/invite` - 邀请成员
+- `DELETE /api/teams/{teamId}/members/{memberId}` - 移除成员
+- `PUT /api/teams/{teamId}/transfer-admin` - 转让团队管理员（仅创建者）
+
+### 文件访问
+- `GET /uploads/avatar/**` - 头像等上传文件的静态访问（后端本地 uploads 目录，前端经 /uploads 代理）
 
 ### 通知接口
 - `GET /api/notifications` - 获取我的通知列表
@@ -291,6 +310,7 @@ Agent 服务将在 http://localhost:5001 启动
       - `llm_enabled`（含 `value` 布尔）
       - *注*：原 model_provider / supported / tip / show_reasoning / use_langgraph / llm_* 大段 tip 等冗余字段已全部删除，顶级 `llm_params` 整块也不再返回
     - `llm_connectivity`：`ping_ok / message（一行简略版，无 request_id 尾巴）/ total_tokens / latency_ms / model_provider / model_name / base_url`
+  - **连通性 ping 为后台异步检测**（结果缓存 30s）：health 接口毫秒级返回，首次调用 `ping_ok` 可能为 `null`（检测中），稍后刷新即可看到结果；前端不会因 ping 慢而超时
   - 前端「供应商·模型名」一键展开的「🔧 配置信息」面板只显示 4 行：API Key（脱敏）/ Model / Base URL / LLM 连通性；来源信息改在 ⚠️ 图标悬停 tooltip 查看
 - `POST /agent/chat` - 对话接口（非流式，一次性返回）
   - 请求：`{ "user_id": 1, "message": "我的任务", "chat_id": "chat_xxx"  // 可选，用于历史+上下文 }`
@@ -298,8 +318,9 @@ Agent 服务将在 http://localhost:5001 启动
 - `POST /agent/chat/stream` - **对话接口（流式输出 SSE / text/plain）**——默认使用
   - 请求：`{ "user_id": 1, "message": "我的任务", "chat_id": "chat_xxx" }`
   - 响应头：`Content-Type: text/plain; charset=utf-8; Cache-Control: no-cache; X-Accel-Buffering: no`
-  - 传输格式：按 2~6 字符增量 chunk 逐个吐出正文；**最后一条 chunk 以 `\0__DONE__:` 开头**，后面接 JSON meta：`{ "type":"markdown", "used_llm":true, "used_langgraph":true, "intent":"task_analysis", "llm_latency_ms":4216, "llm_usage":{...}, "data":{...} }`
-  - 前端识别规则：遇到 `\0__DONE__:` 前缀 → 停止拼正文、取后半 JSON 解析为 meta 落地
+  - 传输格式（默认「原生流式」，`LLM_NATIVE_STREAM=True`）：三类内容混排——正文增量（LLM token 级流式/静态模板打字机）、控制事件 `\0__EVENT__:{json}\n`（status=阶段状态"分析中/查询中/思考中"、reasoning=思考链增量）、结束标记 `\0__DONE__:` + JSON meta：`{ "type":"markdown", "used_llm":true, "used_langgraph":true, "intent":"task_analysis", "llm_latency_ms":4216, "llm_usage":{...}, "data":{...} }`
+  - 前端识别规则：缓冲区内找 `\0` 定位——`\0__EVENT__:` 解析控制事件（不拼正文）、遇到 `\0__DONE__:` 停止拼正文、取后半 JSON 解析为 meta 落地
+  - `LLM_NATIVE_STREAM=False` 时退化为旧版：完整生成后按 2~6 字符打字机，无事件，前端完全兼容
 - `GET /agent/history/<chat_id>?user_id=uid` - 获取指定会话的聊天历史（按时间升序，刷新页面后用它恢复记录）
   - 返回：`{ "chat_id": "...", "total": 12, "messages": [ { "role":"user"/"agent", "content":"...", "type":"markdown"/"text", "timestamp":"ISO", "meta":{...} }, ... ] }`
 - `DELETE /agent/history/<chat_id>?user_id=uid` - 清空指定会话的聊天历史
@@ -330,7 +351,7 @@ Agent 服务将在 http://localhost:5001 启动
   - 流式由 `langchain_llm.invoke_agent_via_langgraph_stream()` 先拿到完整 content，再按 2~6 字符随机增量吐出，兼容不支持原生 stream 的模型；最后吐 `\0__DONE__:` + meta JSON；
   - 流式结束时 chat_service 会从 DONE 行拿 meta，把 assistant 回复连同 meta 一起追加到 `chat_history`。
 - **LangGraph 状态机 5 节点**：`classify_intent`（带上下文记忆）→ `static_reply`/`data_query` → `llm_polish`(可选) → `finalize`，代码见 `services/langchain_llm.py`
-- **上下文记忆（多轮对话）**：`chat_history.get_llm_context_messages(chat_id, user_id, CONTEXT_WINDOW_SIZE)` 取最近 N 轮（默认 6 轮）拼进 `_build_llm_messages` 带给 DeepSeek，省 Token 又能记得前文；`CONTEXT_WINDOW_SIZE=0` 可完全关闭
+- **上下文记忆（多轮对话）**：`chat_history.get_llm_context_messages(chat_id, user_id, CONTEXT_WINDOW_SIZE)` 取最近 N 轮（默认 6 轮）拼进 `_build_llm_messages` 带给大模型，省 Token 又能记得前文；`CONTEXT_WINDOW_SIZE=0` 可完全关闭
 - **聊天历史持久层**：`services/chat_history.py`，线程安全的 `OrderedDict` LRU + TTL（默认 4h，`CHAT_HISTORY_TTL_SECS` 可调），每个 `(chat_id,user_id)` 最多缓存 `CHAT_HISTORY_MAX_MSGS`（默认 100）条，过期自动清理；刷新页面通过 `GET /agent/history/<chat_id>` 恢复
 - **任务细节强制列出**（本地草稿 + LLM 双保险）：
   - 本地：`_reply_task_analysis / _reply_today_tasks / _reply_overdue_tasks / _reply_high_priority` 逐条输出「`1. 「标题」 T-xxx  (完成/截止 yyyy-MM-dd HH:mm)  [团队名]`」；
@@ -340,12 +361,23 @@ Agent 服务将在 http://localhost:5001 启动
   - 优先级硬规则：**系统环境变量 DEEPSEEK_API_KEY > config.py 默认值**；
   - `/agent/health` 返回 `config_sources[*].tip` 会写明"如需切回 config.py 默认值，请删除系统/用户环境变量 DEEPSEEK_API_KEY 后重启服务"；
   - 启动日志 stdout 和 Flask logger 都会打印 `api_key=sk-db****ee6a  (来源: 环境变量 DEEPSEEK_API_KEY)` 等一行信息。
-- **模型接入**：`ChatOpenAI(api_key, base_url="https://api.deepseek.com/v1", model="deepseek-v4-flash")`，与 OpenAI API 完全兼容
-- **数据安全**：API Key 日志脱敏 `sk-db****ee6a`，推荐通过环境变量 `DEEPSEEK_API_KEY` 注入
+- **模型接入**：`ChatOpenAI(api_key, base_url=<MODEL_PROVIDER 对应端点>, model="agnes-2.5-flash")`，与 OpenAI API 完全兼容；供应商/模型在 `agent/config.py` 的 `MODEL_PROVIDER` 预设中切换（agnes / deepseek 等）
+- **数据安全**：API Key 日志脱敏 `sk-****rkQJ`，推荐通过环境变量注入
 - **成本控制**：静态意图（greeting/help/thanks/who）100% 本地模板；仅数据驱动意图调用 LLM 润色；`LLM_ENABLED=False` 全局关闭
 - **高可用降级链**：LangGraph 导入异常 → 纯函数；LangChain ChatOpenAI 调用失败 → requests 直连；requests 也失败 → 本地草稿
 - **虚拟环境**：所有依赖安装到 `D:\Code\python\AI\.venv`，不要使用全局 Python 解释器运行/安装
-- **更多细节**：见 [agent/README.md](file:///D:/Code/LTCMsystem/agent/README.md)
+- **更多细节**：见 [agent/README.md](agent/README.md)
 
-# LTCMsystem
-轻量任务协作管理系统，面向个人学习规划、学生团队课程项目、小型团队办公协作，用于任务统筹、分工分配、 进度追踪与数据复盘，解决任务管理混乱、分工不清晰、进度难跟踪的问题。
+## 生产环境部署检查清单
+
+- [x] 恢复密码验证逻辑 (UserServiceImpl.java)
+- [x] 收紧 Spring Security 配置，只放行 `/api/auth/**`、`/api/public/**`、`/uploads/**` (SecurityConfig.java + JwtAuthenticationFilter)
+- [x] 启用JWT拦截器 (WebMvcConfig.java)
+- [x] 移除默认用户ID逻辑 (UserContext.java)
+- [x] 配置安全的JWT密钥（HS256 256位以上，考虑使用环境变量）
+- [ ] 配置HTTPS
+- [ ] 配置正确的CORS策略，限制允许的源
+- [ ] 禁用SQL日志输出
+- [ ] 配置生产级别的数据库连接池
+- [ ] 添加日志记录和监控
+- [ ] 配置数据备份策略
